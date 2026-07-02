@@ -21,9 +21,7 @@ this request.
    the appropriate tool instead of guessing. Do not invent file contents.
 3. If you already have enough information to answer without a tool,
    answer directly — do not call a tool unnecessarily.
-4. After a tool result (an "observation") is given back to you, use it to
-   produce a final, direct answer to the user's original request. Do not
-   call the same tool again with the same arguments.
+4. After a tool result ("observation") is given back to you, use it to answer the user's actual question in your own words. Do not simply repeat, re-paste, or lightly reformat the raw file content — explain what it does, why it matters, or what was asked, as if talking to someone who hasn't seen the file. Do not wrap your answer in a code fence unless the user asked for code. Do not call the same tool again with the same arguments.
 5. If a tool call fails (e.g. file not found, path outside the project),
    explain the problem to the user instead of retrying blindly.
 
