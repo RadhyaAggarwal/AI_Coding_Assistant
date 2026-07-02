@@ -1,0 +1,23 @@
+# Local AI Coding Agent — configuration
+#
+# All model names, endpoints, and local paths must be read from this file.
+# Never hardcode these values in application code.
+
+model:
+  # Base URL of the local Ollama server (or any OpenAI/Ollama-compatible
+  # inference server). The Model Interface layer talks to this endpoint
+  # over HTTP — it does not care where the model process physically runs.
+  endpoint_url: "http://localhost:11434"
+
+  # Name of the model to request from the inference server, as registered
+  # with `ollama pull <name>` / `ollama list`.
+  name: "qwen2.5-coder:14b"
+
+  # Generation request timeout, in seconds.
+  request_timeout_seconds: 120
+
+project:
+  # Root directory the agent is allowed to operate on. All tool file
+  # access is validated against this path so the agent can't read or
+  # write outside of it.
+  root_path: "."
