@@ -13,6 +13,12 @@ class Tool(ABC):
     description: str
     parameters: dict[str, Any]  # JSON schema for the tool's arguments
 
+    # Tools with real side effects beyond reading (e.g. running a shell
+    # command) should set this True; ToolRegistry.execute() then requires
+    # human confirmation before calling run(). Defaults False since most
+    # tools are read-only and path-contained.
+    requires_confirmation: bool = False
+
     @abstractmethod
     def run(self, **kwargs: Any) -> str:
         """Execute the tool and return its result as a string."""

@@ -21,3 +21,7 @@ project:
   # access is validated against this path so the agent can't read or
   # write outside of it.
   root_path: "."
+
+execution:
+  # Max seconds a run_command tool call may run before being killed.
+  command_timeout_seconds: 60

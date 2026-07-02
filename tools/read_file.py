@@ -6,10 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from tools.base import Tool
+from tools.path_safety import PathOutsideProjectError, resolve_within_root
 
-
-class PathOutsideProjectError(Exception):
-    """Raised when a requested path resolves outside the project root."""
+__all__ = ["PathOutsideProjectError", "ReadFileTool"]
 
 
 class ReadFileTool(Tool):
@@ -33,13 +32,7 @@ class ReadFileTool(Tool):
         self._project_root = Path(project_root).resolve()
 
     def run(self, path: str) -> str:
-        resolved = (self._project_root / path).resolve()
-        try:
-            resolved.relative_to(self._project_root)
-        except ValueError:
-            raise PathOutsideProjectError(
-                f"Refusing to read '{path}': resolves outside the project root."
-            )
+        resolved = resolve_within_root(self._project_root, path)
         if not resolved.is_file():
             raise FileNotFoundError(f"No such file: {path}")
         return resolved.read_text(encoding="utf-8")
