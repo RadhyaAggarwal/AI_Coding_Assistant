@@ -16,3 +16,7 @@ models/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Agent-generated file snapshots and change log (state/snapshot.py) —
+# local recovery data, not project source
+.agent_state/

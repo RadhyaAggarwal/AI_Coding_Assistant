@@ -25,3 +25,9 @@ project:
 execution:
   # Max seconds a run_command tool call may run before being killed.
   command_timeout_seconds: 60
+
+state:
+  # Directory, relative to project root, where pre-edit file snapshots and
+  # the change log are stored, so any edit_file change can be rolled back
+  # (see state/snapshot.py and `python main.py --history` / `--rollback`).
+  snapshot_dir: ".agent_state"
