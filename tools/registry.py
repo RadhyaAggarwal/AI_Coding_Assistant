@@ -5,6 +5,7 @@ name — it never imports a tool class directly.
 from typing import Any
 
 from tools.base import Tool
+from tools.validation import validate_arguments
 
 
 class ToolRegistry:
@@ -20,4 +21,6 @@ class ToolRegistry:
     def execute(self, name: str, arguments: dict[str, Any]) -> str:
         if name not in self._tools:
             raise KeyError(f"No tool registered with name '{name}'")
-        return self._tools[name].run(**arguments)
+        tool = self._tools[name]
+        validate_arguments(tool.parameters, arguments)
+        return tool.run(**arguments)

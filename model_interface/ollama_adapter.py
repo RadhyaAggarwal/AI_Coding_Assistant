@@ -2,6 +2,10 @@
 
 Talks to a local Ollama server's /api/chat endpoint over HTTP. This is the
 only file in the project that knows Ollama's request/response shape.
+Recovering a tool call the model attempted outside the structured
+tool_calls field (see model_interface/tool_call_parsing.py) is handled by
+agent_controller/, not here, so every backend benefits from it uniformly
+instead of each adapter having to remember to do it.
 """
 from typing import Any
 

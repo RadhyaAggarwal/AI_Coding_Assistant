@@ -11,7 +11,7 @@ model:
 
   # Name of the model to request from the inference server, as registered
   # with `ollama pull <name>` / `ollama list`.
-  name: "qwen2.5-coder:14b"
+  name: "qwen2.5-coder:7b"
 
   # Generation request timeout, in seconds.
   request_timeout_seconds: 120
