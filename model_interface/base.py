@@ -9,6 +9,18 @@ from typing import Any
 
 
 @dataclass
+class Message:
+    """One turn in a chat-style conversation.
+
+    role is one of "system", "user", "assistant", "tool" — the roles used
+    by essentially every chat-tuned LLM API, not specific to any backend.
+    """
+
+    role: str
+    content: str
+
+
+@dataclass
 class ToolCall:
     """A single tool invocation requested by the model."""
 
@@ -36,13 +48,15 @@ class ModelInterface(ABC):
     @abstractmethod
     def generate(
         self,
-        prompt: str,
+        messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
     ) -> ModelResponse:
-        """Send a prompt to the model and return its response.
+        """Send a chat-style conversation to the model and return its response.
 
         Args:
-            prompt: The full prompt text to send to the model.
+            messages: The full conversation so far, oldest first (typically
+                a system message, then alternating user/assistant/tool
+                turns).
             tools: Optional list of JSON-schema tool definitions the model
                 may choose to call, as produced by the tool registry.
 

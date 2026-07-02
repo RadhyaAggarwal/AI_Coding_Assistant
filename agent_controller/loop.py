@@ -5,6 +5,11 @@ the result back, and return a final answer. This proves the model /
 tool / controller pieces connect end-to-end — it is intentionally not the
 full understand -> plan -> act -> observe -> continue ReAct system yet.
 
+The conversation is built as proper role-separated messages (system,
+user, assistant, tool) rather than one flattened string, so it reads as
+a coherent history to the model and so a future multi-step ReAct loop can
+extend this same history instead of needing a different representation.
+
 Local models are unreliable about tool calls in two distinct ways (Build
 Plan Addendum 2.2), both handled here rather than left to each backend:
   - They may not use the backend's structured tool-calling field at all,
@@ -15,9 +20,10 @@ Plan Addendum 2.2), both handled here rather than left to each backend:
     schema (missing/wrong-typed fields). We tell the model what went
     wrong and give it one more chance before giving up.
 """
+import json
 from pathlib import Path
 
-from model_interface.base import ModelInterface, ModelResponse, ToolCall
+from model_interface.base import Message, ModelInterface, ModelResponse, ToolCall
 from model_interface.tool_call_parsing import extract_tool_call
 from tools.registry import ToolRegistry
 
@@ -35,16 +41,29 @@ def _resolve_tool_call(response: ModelResponse, known_tool_names: set[str]) -> T
     return extract_tool_call(response.text, known_tool_names)
 
 
+def _assistant_turn_content(response: ModelResponse, call: ToolCall) -> str:
+    # Preserve exactly what the model said when it said anything; only
+    # synthesize a stand-in when native tool_calls left the text empty.
+    return response.text or json.dumps({"name": call.name, "arguments": call.arguments})
+
+
 def run(user_request: str, model: ModelInterface, tools: ToolRegistry) -> str:
-    conversation = f"{_load_system_prompt()}\n\nUser request: {user_request}"
+    messages = [
+        Message(role="system", content=_load_system_prompt()),
+        Message(role="user", content=user_request),
+    ]
     known_tool_names = {schema["function"]["name"] for schema in tools.schemas()}
 
     for attempt in range(1, _MAX_TOOL_ATTEMPTS + 1):
-        response = model.generate(conversation, tools=tools.schemas())
+        response = model.generate(messages, tools=tools.schemas())
         call = _resolve_tool_call(response, known_tool_names)
 
         if call is None:
             return response.text
+
+        messages.append(
+            Message(role="assistant", content=_assistant_turn_content(response, call))
+        )
 
         try:
             observation = tools.execute(call.name, call.arguments)
@@ -54,22 +73,19 @@ def run(user_request: str, model: ModelInterface, tools: ToolRegistry) -> str:
                     f"Could not complete the request: attempted to call "
                     f"'{call.name}' with {call.arguments}, which failed: {exc}"
                 )
-            conversation += (
-                f"\n\nYou attempted: {call.name}({call.arguments})\n"
-                f"That failed: {exc}\n"
-                "Correct the call and try again, or answer directly if you can't."
+            messages.append(
+                Message(
+                    role="tool",
+                    content=f"Error: {exc}. Correct the call and try again.",
+                )
             )
             continue
 
-        conversation += (
-            f"\n\nTool call: {call.name}({call.arguments})\n"
-            f"Observation:\n{observation}\n\n"
-            "Using the observation above, give the user a final answer."
-        )
+        messages.append(Message(role="tool", content=observation))
         # Don't offer tools on this call: the loop doesn't act on a second
         # tool call anyway, and offering one biases small models toward
         # emitting more tool-call JSON instead of a natural-language answer.
-        final_response = model.generate(conversation)
+        final_response = model.generate(messages)
         return final_response.text
 
     return "Could not complete the request."

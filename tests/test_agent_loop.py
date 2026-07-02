@@ -1,9 +1,11 @@
 """End-to-end tests for agent_controller.loop.run against fake models,
 covering the real failure mode observed against Ollama: a model that
 writes its tool call as plain text instead of using the structured
-tool_calls field.
+tool_calls field. Fake models branch on message-list shape (length/roles)
+rather than string content, since the conversation is now a proper
+role-separated history, not a flattened prompt string.
 """
-from model_interface.base import ModelInterface, ModelResponse
+from model_interface.base import Message, ModelInterface, ModelResponse
 from tools.read_file import ReadFileTool
 from tools.registry import ToolRegistry
 
@@ -16,15 +18,15 @@ class TextOnlyToolCallModel(ModelInterface):
     the native tool_calls field."""
 
     def __init__(self):
-        self.prompts: list[str] = []
+        self.calls: list[list[Message]] = []
 
-    def generate(self, prompt, tools=None):
-        self.prompts.append(prompt)
-        if "Observation:" in prompt:
-            return ModelResponse(text="FINAL ANSWER USING OBSERVATION")
-        return ModelResponse(
-            text='{"name": "read_file", "arguments": {"path": "sample.txt"}}'
-        )
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))  # snapshot: loop mutates this list in place
+        if len(messages) == 2:  # system + user: first turn, no history yet
+            return ModelResponse(
+                text='{"name": "read_file", "arguments": {"path": "sample.txt"}}'
+            )
+        return ModelResponse(text="FINAL ANSWER USING OBSERVATION")
 
 
 def test_recovers_text_only_tool_call_and_executes_it(tmp_path):
@@ -36,8 +38,10 @@ def test_recovers_text_only_tool_call_and_executes_it(tmp_path):
     answer = run("Summarize sample.txt", model, tools)
 
     assert answer == "FINAL ANSWER USING OBSERVATION"
-    assert len(model.prompts) == 2
-    assert "sample contents" in model.prompts[1]  # observation was fed back
+    assert len(model.calls) == 2
+    final_call_messages = model.calls[1]
+    assert [m.role for m in final_call_messages] == ["system", "user", "assistant", "tool"]
+    assert final_call_messages[-1].content == "sample contents"  # observation fed back verbatim
 
 
 class FailThenSucceedModel(ModelInterface):
@@ -45,17 +49,17 @@ class FailThenSucceedModel(ModelInterface):
     (after seeing the failure) supplies it correctly."""
 
     def __init__(self):
-        self.prompts: list[str] = []
+        self.calls: list[list[Message]] = []
 
-    def generate(self, prompt, tools=None):
-        self.prompts.append(prompt)
-        if "Observation:" in prompt:
-            return ModelResponse(text="FINAL ANSWER")
-        if "That failed:" in prompt:
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))  # snapshot: loop mutates this list in place
+        if len(messages) == 2:
+            return ModelResponse(text='{"name": "read_file", "arguments": {}}')
+        if len(messages) == 4:
             return ModelResponse(
                 text='{"name": "read_file", "arguments": {"path": "sample.txt"}}'
             )
-        return ModelResponse(text='{"name": "read_file", "arguments": {}}')
+        return ModelResponse(text="FINAL ANSWER")
 
 
 def test_retries_after_validation_failure(tmp_path):
@@ -67,14 +71,18 @@ def test_retries_after_validation_failure(tmp_path):
     answer = run("Summarize sample.txt", model, tools)
 
     assert answer == "FINAL ANSWER"
-    assert len(model.prompts) == 3
+    assert len(model.calls) == 3
+    # the retry should have seen the validation error as a tool-role message
+    retry_messages = model.calls[1]
+    assert retry_messages[-1].role == "tool"
+    assert "Missing required argument" in retry_messages[-1].content
 
 
 class AlwaysInvalidModel(ModelInterface):
     def __init__(self):
         self.call_count = 0
 
-    def generate(self, prompt, tools=None):
+    def generate(self, messages, tools=None):
         self.call_count += 1
         return ModelResponse(text='{"name": "read_file", "arguments": {}}')
 

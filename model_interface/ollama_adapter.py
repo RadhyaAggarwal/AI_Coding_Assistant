@@ -11,7 +11,7 @@ from typing import Any
 
 import requests
 
-from model_interface.base import ModelInterface, ModelResponse, ToolCall
+from model_interface.base import Message, ModelInterface, ModelResponse, ToolCall
 
 
 class OllamaAdapter(ModelInterface):
@@ -27,12 +27,12 @@ class OllamaAdapter(ModelInterface):
 
     def generate(
         self,
-        prompt: str,
+        messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
     ) -> ModelResponse:
         payload: dict[str, Any] = {
             "model": self._model_name,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": m.role, "content": m.content} for m in messages],
             "stream": False,
         }
         if tools:
