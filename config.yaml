@@ -13,8 +13,10 @@ model:
   # with `ollama pull <name>` / `ollama list`.
   name: "qwen2.5-coder:7b"
 
-  # Generation request timeout, in seconds.
-  request_timeout_seconds: 120
+  # Generation request timeout, in seconds. Needs headroom for CPU-only
+  # inference — grows with the number of registered tools, since the full
+  # tool schema list is sent (and must be processed) on every request.
+  request_timeout_seconds: 240
 
 project:
   # Root directory the agent is allowed to operate on. All tool file

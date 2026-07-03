@@ -15,9 +15,11 @@ from config import load_config
 from model_interface.ollama_adapter import OllamaAdapter
 from state.snapshot import SnapshotManager
 from tools.edit_file import EditFileTool
+from tools.find_symbol import FindSymbolTool
 from tools.list_directory import ListDirectoryTool
 from tools.read_file import ReadFileTool
 from tools.registry import ToolRegistry
+from tools.repo_overview import RepoOverviewTool
 from tools.run_command import RunCommandTool
 from tools.search_code import SearchCodeTool
 
@@ -38,6 +40,8 @@ def build_tool_registry(
     registry.register(SearchCodeTool(project_root))
     registry.register(RunCommandTool(project_root, timeout_seconds=command_timeout_seconds))
     registry.register(EditFileTool(project_root))
+    registry.register(RepoOverviewTool(project_root))
+    registry.register(FindSymbolTool(project_root))
     return registry
 
 
