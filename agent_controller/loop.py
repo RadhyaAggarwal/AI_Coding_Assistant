@@ -32,7 +32,12 @@ from model_interface.tool_call_parsing import extract_tool_call
 from tools.registry import ToolRegistry
 
 _SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "system_prompt.md"
-_MAX_STEPS = 4
+# 4 was enough for a single tool call; a real edit -> test -> fix -> retest
+# cycle needs more room (read, edit, test-fail, edit-fix, test-pass, then a
+# final answer attempt all count as steps). Each step is ~50-240s on this
+# machine's CPU-only inference, so this is a real latency tradeoff, not a
+# free increase — raise further only if a realistic task still runs out.
+_MAX_STEPS = 6
 
 
 def _load_system_prompt() -> str:

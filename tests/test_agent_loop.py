@@ -7,12 +7,19 @@ safe (repeated-call refusal, a hard step budget). Fake models branch on
 message-list shape (length/roles) rather than string content, since the
 conversation is a proper role-separated history, not a flattened string.
 """
+import json
+
 from model_interface.base import Message, ModelInterface, ModelResponse
+from tools.edit_file import EditFileTool
 from tools.read_file import ReadFileTool
 from tools.registry import ToolRegistry
 from tools.search_code import SearchCodeTool
 
 from agent_controller.loop import _MAX_STEPS, run
+
+
+def _call_text(name: str, arguments: dict) -> str:
+    return json.dumps({"name": name, "arguments": arguments})
 
 
 class TextOnlyToolCallModel(ModelInterface):
@@ -168,3 +175,49 @@ def test_refuses_identical_repeated_tool_call(tmp_path):
     third_call_messages = model.calls[2]
     assert third_call_messages[-1].role == "tool"
     assert "already called this exact tool" in third_call_messages[-1].content
+
+
+class EditVerifyFixVerifyModel(ModelInterface):
+    """Simulates a realistic fix cycle: create a buggy file, verify by
+    reading it, fix it, verify again, then answer. 4 tool-call turns plus
+    a final answer turn — exercises the headroom _MAX_STEPS=6 was raised
+    to support (4 was only enough for a single tool call)."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        step = len([m for m in messages if m.role == "tool"])
+        if step == 0:
+            return ModelResponse(
+                text=_call_text(
+                    "edit_file",
+                    {"path": "calc.py", "search": "", "replace": "def add(a, b):\n    return a - b\n"},
+                )
+            )
+        if step == 1:
+            return ModelResponse(text=_call_text("read_file", {"path": "calc.py"}))
+        if step == 2:
+            return ModelResponse(
+                text=_call_text(
+                    "edit_file",
+                    {"path": "calc.py", "search": "return a - b", "replace": "return a + b"},
+                )
+            )
+        if step == 3:
+            return ModelResponse(text=_call_text("read_file", {"path": "calc.py"}))
+        return ModelResponse(text="Fixed: add() now returns a + b.")
+
+
+def test_completes_realistic_edit_verify_fix_cycle_within_budget(tmp_path):
+    tools = ToolRegistry(confirm=lambda description: True)  # edit_file requires confirmation
+    tools.register(EditFileTool(tmp_path))
+    tools.register(ReadFileTool(tmp_path))
+    model = EditVerifyFixVerifyModel()
+
+    answer = run("Fix the add function in calc.py", model, tools)
+
+    assert answer == "Fixed: add() now returns a + b."
+    assert len(model.calls) == 5  # 4 tool-call turns + 1 final answer turn
+    assert "return a + b" in (tmp_path / "calc.py").read_text(encoding="utf-8")
