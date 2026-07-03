@@ -88,7 +88,7 @@ def main() -> None:
     )
 
     user_request = " ".join(sys.argv[1:]) or input("Request: ")
-    answer = run(user_request, model, tools)
+    answer = run(user_request, model, tools, config["model"]["context_window_tokens"])
     print(answer)
 
 

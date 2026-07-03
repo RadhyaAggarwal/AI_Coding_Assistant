@@ -27,11 +27,15 @@ never converges can't run forever.
 import json
 from pathlib import Path
 
+from agent_controller.context_budget import cap_observation, trim_to_budget
 from model_interface.base import Message, ModelInterface, ModelResponse, ToolCall
 from model_interface.tool_call_parsing import extract_tool_call
 from tools.registry import ToolRegistry
 
 _SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "system_prompt.md"
+# Conservative default so existing callers (tests) don't need to pass this;
+# main.py passes the real value from config.yaml (model.context_window_tokens).
+_DEFAULT_CONTEXT_WINDOW_TOKENS = 8192
 # 4 was enough for a single tool call; a real edit -> test -> fix -> retest
 # cycle needs more room (read, edit, test-fail, edit-fix, test-pass, then a
 # final answer attempt all count as steps). Each step is ~50-240s on this
@@ -60,7 +64,12 @@ def _call_key(call: ToolCall) -> tuple[str, str]:
     return (call.name, json.dumps(call.arguments, sort_keys=True))
 
 
-def run(user_request: str, model: ModelInterface, tools: ToolRegistry) -> str:
+def run(
+    user_request: str,
+    model: ModelInterface,
+    tools: ToolRegistry,
+    context_window_tokens: int = _DEFAULT_CONTEXT_WINDOW_TOKENS,
+) -> str:
     messages = [
         Message(role="system", content=_load_system_prompt()),
         Message(role="user", content=user_request),
@@ -69,7 +78,8 @@ def run(user_request: str, model: ModelInterface, tools: ToolRegistry) -> str:
     already_called: set[tuple[str, str]] = set()
 
     for _ in range(_MAX_STEPS):
-        response = model.generate(messages, tools=tools.schemas())
+        sendable = trim_to_budget(messages, context_window_tokens)
+        response = model.generate(sendable, tools=tools.schemas())
         call = _resolve_tool_call(response, known_tool_names)
 
         if call is None:
@@ -104,14 +114,14 @@ def run(user_request: str, model: ModelInterface, tools: ToolRegistry) -> str:
             continue
 
         already_called.add(_call_key(call))
-        messages.append(Message(role="tool", content=observation))
+        messages.append(Message(role="tool", content=cap_observation(observation)))
 
     # Step budget exhausted. Ask once more, without tool access, so the
     # model synthesizes an answer from whatever it gathered rather than
     # the loop just giving up with nothing. If it still tries to call a
     # tool anyway, don't leak that raw attempt to the user as if it were
     # a real answer.
-    final_response = model.generate(messages)
+    final_response = model.generate(trim_to_budget(messages, context_window_tokens))
     if _resolve_tool_call(final_response, known_tool_names) is not None:
         return f"Could not complete the request within {_MAX_STEPS} steps."
     return final_response.text

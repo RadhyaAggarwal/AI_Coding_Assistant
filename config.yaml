@@ -18,6 +18,12 @@ model:
   # tool schema list is sent (and must be processed) on every request.
   request_timeout_seconds: 240
 
+  # The pulled model's actual context window, in tokens (check with
+  # `ollama show <name>` if you change models). Used to budget how much
+  # conversation history is sent per request — see
+  # agent_controller/context_budget.py. 32768 matches qwen2.5-coder:7b.
+  context_window_tokens: 32768
+
 project:
   # Root directory the agent is allowed to operate on. All tool file
   # access is validated against this path so the agent can't read or
