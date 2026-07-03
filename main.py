@@ -15,6 +15,8 @@ from config import load_config
 from model_interface.ollama_adapter import OllamaAdapter
 from state.snapshot import SnapshotManager
 from tools.edit_file import EditFileTool
+from tools.find_callers import FindCallersTool
+from tools.find_importers import FindImportersTool
 from tools.find_symbol import FindSymbolTool
 from tools.html_overview import HtmlOverviewTool
 from tools.list_directory import ListDirectoryTool
@@ -44,6 +46,8 @@ def build_tool_registry(
     registry.register(RepoOverviewTool(project_root))
     registry.register(FindSymbolTool(project_root))
     registry.register(HtmlOverviewTool(project_root))
+    registry.register(FindImportersTool(project_root))
+    registry.register(FindCallersTool(project_root))
     return registry
 
 

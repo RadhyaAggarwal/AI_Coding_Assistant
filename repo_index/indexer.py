@@ -1,7 +1,7 @@
 """Orchestrates a full repository index: scans the project, dispatches
 each file to the right language-specific indexer, and aggregates results
-into one flat symbol table for lookup by tools/find_symbol.py and
-tools/repo_overview.py.
+into one flat symbol table for lookup by tools/find_symbol.py,
+tools/find_importers.py, tools/find_callers.py, and tools/repo_overview.py.
 
 No caching yet — each RepoIndex() call re-walks and re-parses the whole
 project. Fine at this project's current size; worth revisiting if this
@@ -12,7 +12,7 @@ from pathlib import Path
 from repo_index.css_index import index_css_file
 from repo_index.html_index import index_html_file
 from repo_index.js_index import index_javascript_file
-from repo_index.models import FileIndex, RepoSummary, Symbol
+from repo_index.models import CallSite, FileIndex, ImportEdge, RepoSummary, Symbol
 from repo_index.python_index import index_python_file
 from repo_index.scanner import EXTENSION_LANGUAGES, iter_project_files, scan
 
@@ -50,4 +50,22 @@ class RepoIndex:
             for symbol in file_index.symbols:
                 if symbol.name.lower() == needle:
                     matches.append(symbol)
+        return matches
+
+    def find_importers(self, module_name: str) -> list[ImportEdge]:
+        needle = module_name.lower()
+        matches: list[ImportEdge] = []
+        for file_index in self.files.values():
+            for edge in file_index.imports:
+                if edge.imported.lower() == needle:
+                    matches.append(edge)
+        return matches
+
+    def find_callers(self, function_name: str) -> list[CallSite]:
+        needle = function_name.lower()
+        matches: list[CallSite] = []
+        for file_index in self.files.values():
+            for call in file_index.calls:
+                if call.callee_name.lower() == needle:
+                    matches.append(call)
         return matches

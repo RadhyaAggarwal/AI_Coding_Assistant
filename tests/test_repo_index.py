@@ -68,3 +68,36 @@ def test_ignores_unsupported_extensions(tmp_path):
     index = RepoIndex(tmp_path)
 
     assert set(index.files) == {"main.py"}
+
+
+def test_find_importers_across_files(tmp_path):
+    (tmp_path / "a.py").write_text("import os.path\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("import os.path\n", encoding="utf-8")
+    (tmp_path / "c.py").write_text("import sys\n", encoding="utf-8")
+
+    index = RepoIndex(tmp_path)
+    matches = index.find_importers("os.path")
+
+    assert {m.importer_file for m in matches} == {"a.py", "b.py"}
+
+
+def test_find_importers_no_match(tmp_path):
+    (tmp_path / "a.py").write_text("import sys\n", encoding="utf-8")
+    index = RepoIndex(tmp_path)
+    assert index.find_importers("does.not.exist") == []
+
+
+def test_find_callers_across_files_case_insensitive(tmp_path):
+    (tmp_path / "a.py").write_text("def use():\n    Helper()\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("def use2():\n    helper()\n", encoding="utf-8")
+
+    index = RepoIndex(tmp_path)
+    matches = index.find_callers("helper")
+
+    assert {m.caller_file for m in matches} == {"a.py", "b.py"}
+
+
+def test_find_callers_no_match(tmp_path):
+    (tmp_path / "a.py").write_text("def foo():\n    pass\n", encoding="utf-8")
+    index = RepoIndex(tmp_path)
+    assert index.find_callers("does_not_exist") == []

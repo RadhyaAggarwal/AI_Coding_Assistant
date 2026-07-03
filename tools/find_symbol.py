@@ -8,10 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from repo_index.indexer import RepoIndex
-from repo_index.models import Symbol
 from tools.base import Tool
-
-_SNIPPET_LINES = 6
+from tools.source_snippet import snippet_at
 
 
 class FindSymbolTool(Tool):
@@ -45,22 +43,6 @@ class FindSymbolTool(Tool):
         if not matches:
             return f"No symbol named '{name}' found."
         return "\n".join(
-            f"{m.kind} {m.name} — {m.file}:{m.line}\n{self._snippet(m)}"
+            f"{m.kind} {m.name} — {m.file}:{m.line}\n{snippet_at(self._project_root, m.file, m.line)}"
             for m in matches
         )
-
-    def _snippet(self, symbol: Symbol) -> str:
-        try:
-            lines = (self._project_root / symbol.file).read_text(encoding="utf-8").splitlines()
-        except OSError:
-            return "    (source unavailable)"
-
-        start = symbol.line - 1
-        if start < 0 or start >= len(lines):
-            return "    (source unavailable)"
-
-        window = lines[start : start + _SNIPPET_LINES]
-        rendered = "\n".join(f"    {line}" for line in window)
-        if start + _SNIPPET_LINES < len(lines):
-            rendered += "\n    ..."
-        return rendered

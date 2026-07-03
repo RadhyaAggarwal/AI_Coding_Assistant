@@ -15,10 +15,28 @@ class Symbol:
 
 
 @dataclass
+class ImportEdge:
+    importer_file: str  # file containing the import statement
+    imported: str  # module/path being imported, as written in source
+    line: int  # 1-indexed
+
+
+@dataclass
+class CallSite:
+    caller_file: str  # file containing the call
+    callee_name: str  # surface name of what's called — NOT resolved to a
+    # specific class/object, so "obj.foo()" and "other.foo()" are
+    # indistinguishable here (see tools/find_callers.py)
+    line: int  # 1-indexed
+
+
+@dataclass
 class FileIndex:
     path: str  # relative to project root
     language: str  # "python" | "javascript" | ...
     symbols: list[Symbol] = field(default_factory=list)
+    imports: list[ImportEdge] = field(default_factory=list)
+    calls: list[CallSite] = field(default_factory=list)
 
 
 @dataclass
