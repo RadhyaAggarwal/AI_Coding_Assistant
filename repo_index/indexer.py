@@ -10,6 +10,7 @@ becomes slow on a larger repo.
 from pathlib import Path
 
 from repo_index.css_index import index_css_file
+from repo_index.html_index import index_html_file
 from repo_index.js_index import index_javascript_file
 from repo_index.models import FileIndex, RepoSummary, Symbol
 from repo_index.python_index import index_python_file
@@ -19,6 +20,7 @@ _INDEXERS = {
     "python": index_python_file,
     "javascript": index_javascript_file,
     "css": index_css_file,
+    "html": index_html_file,
 }
 
 

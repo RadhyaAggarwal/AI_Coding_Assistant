@@ -16,6 +16,7 @@ from model_interface.ollama_adapter import OllamaAdapter
 from state.snapshot import SnapshotManager
 from tools.edit_file import EditFileTool
 from tools.find_symbol import FindSymbolTool
+from tools.html_overview import HtmlOverviewTool
 from tools.list_directory import ListDirectoryTool
 from tools.read_file import ReadFileTool
 from tools.registry import ToolRegistry
@@ -42,6 +43,7 @@ def build_tool_registry(
     registry.register(EditFileTool(project_root))
     registry.register(RepoOverviewTool(project_root))
     registry.register(FindSymbolTool(project_root))
+    registry.register(HtmlOverviewTool(project_root))
     return registry
 
 

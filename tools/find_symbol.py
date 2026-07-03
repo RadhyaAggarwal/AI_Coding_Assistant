@@ -1,8 +1,8 @@
-"""Symbol-lookup tool: finds where a function, method, class, or CSS
-selector is defined by name, using repo_index's AST-based index (ast for
-Python, tree-sitter for JavaScript/CSS) rather than a plain text search —
-this only matches real definitions, not every text occurrence of the
-name the way search_code would.
+"""Symbol-lookup tool: finds where a function, method, class, CSS
+selector, or HTML element id is defined by name, using repo_index's
+AST-based index (ast for Python, tree-sitter for JavaScript/CSS/HTML)
+rather than a plain text search — this only matches real definitions,
+not every text occurrence of the name the way search_code would.
 """
 from pathlib import Path
 from typing import Any
@@ -17,13 +17,13 @@ _SNIPPET_LINES = 6
 class FindSymbolTool(Tool):
     name = "find_symbol"
     description = (
-        "Find where a function, method, class, or CSS selector (e.g. "
-        "'.button' or '#header') named 'name' is defined in the project "
-        "(case-insensitive exact match on the symbol name, not a "
-        "substring search). Returns each match's file, line number, "
-        "kind, and a short source snippet (a few lines starting at its "
-        "definition). Only understands Python, JavaScript, and CSS "
-        "files currently."
+        "Find where a function, method, class, CSS selector (e.g. "
+        "'.button' or '#header'), or HTML element with an id (e.g. "
+        "'#header') is defined in the project (case-insensitive exact "
+        "match on the symbol name, not a substring search). Returns "
+        "each match's file, line number, kind, and a short source "
+        "snippet (a few lines starting at its definition). Only "
+        "understands Python, JavaScript, CSS, and HTML files currently."
     )
     parameters: dict[str, Any] = {
         "type": "object",

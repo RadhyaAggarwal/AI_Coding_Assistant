@@ -22,6 +22,18 @@ def test_indexes_css_files(tmp_path):
     assert index.find_symbol(".button")[0].file == "styles.css"
 
 
+def test_indexes_html_files(tmp_path):
+    (tmp_path / "index.html").write_text(
+        '<div id="header">hi</div>\n', encoding="utf-8"
+    )
+
+    index = RepoIndex(tmp_path)
+
+    assert "index.html" in index.files
+    assert index.files["index.html"].language == "html"
+    assert index.find_symbol("#header")[0].file == "index.html"
+
+
 def test_find_symbol_case_insensitive(tmp_path):
     (tmp_path / "main.py").write_text("def Foo():\n    pass\n", encoding="utf-8")
 
