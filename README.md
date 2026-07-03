@@ -5,9 +5,13 @@ LLM (served via [Ollama](https://ollama.com)) instead of a third-party
 API. See `CLAUDE.md` for architecture and module boundaries, and
 `AI-Coding Agent.pdf` / `Build_Plan_Addendum.pdf` for the full build plan.
 
-This is currently a **minimal vertical slice**: talk to a local model,
-call one tool (`read_file`), return an answer. Later phases (repo
-indexing, more tools, safe editing, rollback, etc.) are not built yet.
+The agent understands a project's structure (Python/JavaScript/CSS/HTML
+symbol indexing via `ast` and tree-sitter), can search and read files,
+run shell commands, and make validated, snapshotted, human-confirmed
+edits — chaining multiple tool calls per request (e.g. edit a file, then
+run its tests to verify the fix actually works). Not yet built: a
+self-correction loop beyond what fits in one request's step budget, and
+team/multi-developer features.
 
 ## Quickstart
 
@@ -17,11 +21,13 @@ indexing, more tools, safe editing, rollback, etc.) are not built yet.
 2. **Pull the model** referenced in `config.yaml` (`model.name`):
 
    ```
-   ollama pull qwen2.5-coder:14b
+   ollama pull qwen2.5-coder:7b
    ```
 
-   If you want a lighter model for a laptop, pull a smaller one (e.g.
-   `qwen2.5-coder:7b`) and update `model.name` in `config.yaml` to match.
+   The default targets a modest machine (16GB RAM, no dedicated GPU). If
+   you have a stronger GPU, a larger model (e.g. `qwen2.5-coder:14b`)
+   will be noticeably more reliable at multi-step tool use — pull it and
+   update `model.name` in `config.yaml` to match.
 
 3. **Install Python dependencies** (Python 3.10+):
 
@@ -41,11 +47,24 @@ indexing, more tools, safe editing, rollback, etc.) are not built yet.
    python main.py
    ```
 
+   Some tool calls (running a shell command, editing a file) will ask
+   for your confirmation (`Allow? [y/N]`) before they execute. On
+   CPU-only inference, expect each model call to take anywhere from
+   ~1 to a few minutes, especially for requests that chain several tool
+   calls.
+
+5. **Review or undo an edit** the agent made:
+
+   ```
+   python main.py --history
+   python main.py --rollback <snapshot_id>
+   ```
+
 ## Configuration
 
 All model/endpoint/path settings live in `config.yaml` — nothing is
 hardcoded in application code. Edit that file to point at a different
-Ollama endpoint, model name, or project root.
+Ollama endpoint, model name, project root, or to adjust timeouts.
 
 ## Tests
 
