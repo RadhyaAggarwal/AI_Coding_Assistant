@@ -10,8 +10,8 @@ straightforward instead of a rewrite.
 
 Local models are unreliable in ways that matter a lot more once a loop
 can run several steps (Build Plan Addendum 2.2: "degrading plan quality
-over long ReAct loops"), so this loop defends against three failure
-modes rather than trusting the model to self-regulate:
+over long ReAct loops"), so this loop defends against four failure modes
+rather than trusting the model to self-regulate:
   - Not using the backend's structured tool-calling field at all, just
     writing the JSON as plain text. _resolve_tool_call() recovers that.
   - Passing arguments that don't match the tool's schema, or naming a
@@ -21,6 +21,15 @@ modes rather than trusting the model to self-regulate:
     (getting stuck in a loop) instead of using the observation it
     already has. Detected and refused rather than trusted to the
     system prompt's "don't do that" instruction alone.
+  - Answering a compound request without actually addressing every part
+    of it — a model can produce a confident-sounding answer that's
+    really a refusal, a guess, or drops a part it already investigated.
+    find_unaddressed_part() (agent_controller/request_coverage.py) asks
+    the model itself whether its own answer is complete (a short,
+    one-time-per-request check — recognizing a non-answer or a semantic
+    match with no shared vocabulary, e.g. "the RepoIndex class" needing
+    find_symbol, isn't something keyword matching can do reliably), and
+    gets one nudge to fix it before finishing.
 A hard step budget bounds all of the above combined, so a model that
 never converges can't run forever.
 """
@@ -28,6 +37,8 @@ import json
 from pathlib import Path
 
 from agent_controller.context_budget import cap_observation, trim_to_budget
+from agent_controller.request_coverage import find_unaddressed_part
+from agent_controller.tool_router import route_tools
 from model_interface.base import Message, ModelInterface, ModelResponse, ToolCall
 from model_interface.tool_call_parsing import extract_tool_call
 from tools.registry import ToolRegistry
@@ -76,13 +87,32 @@ def run(
     ]
     known_tool_names = {schema["function"]["name"] for schema in tools.schemas()}
     already_called: set[tuple[str, str]] = set()
+    coverage_nudge_used = False
 
     for _ in range(_MAX_STEPS):
         sendable = trim_to_budget(messages, context_window_tokens)
-        response = model.generate(sendable, tools=tools.schemas())
+        query_text = " ".join(m.content for m in sendable if m.role != "system")
+        offered_tools = route_tools(query_text, tools.schemas())
+        response = model.generate(sendable, tools=offered_tools)
         call = _resolve_tool_call(response, known_tool_names)
 
         if call is None:
+            if not coverage_nudge_used:
+                unaddressed = find_unaddressed_part(user_request, response.text, model)
+                if unaddressed is not None:
+                    coverage_nudge_used = True
+                    messages.append(Message(role="assistant", content=response.text))
+                    messages.append(
+                        Message(
+                            role="user",
+                            content=(
+                                f"Your answer isn't complete: {unaddressed} Please "
+                                "address that (using a tool if needed) before "
+                                "finishing."
+                            ),
+                        )
+                    )
+                    continue
             return response.text
 
         messages.append(

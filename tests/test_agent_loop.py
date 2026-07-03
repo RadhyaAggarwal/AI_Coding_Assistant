@@ -11,8 +11,10 @@ import json
 
 from model_interface.base import Message, ModelInterface, ModelResponse
 from tools.edit_file import EditFileTool
+from tools.list_directory import ListDirectoryTool
 from tools.read_file import ReadFileTool
 from tools.registry import ToolRegistry
+from tools.run_command import RunCommandTool
 from tools.search_code import SearchCodeTool
 
 from agent_controller.loop import _MAX_STEPS, run
@@ -288,3 +290,112 @@ def test_completes_realistic_edit_verify_fix_cycle_within_budget(tmp_path):
     assert answer == "Fixed: add() now returns a + b."
     assert len(model.calls) == 5  # 4 tool-call turns + 1 final answer turn
     assert "return a + b" in (tmp_path / "calc.py").read_text(encoding="utf-8")
+
+
+class RecordingToolsModel(ModelInterface):
+    """Records which tool schemas were actually offered on the first
+    generate() call, to verify the router narrowed them rather than
+    always offering the full registered set."""
+
+    def __init__(self):
+        self.offered_tool_names: list[list[str]] = []
+
+    def generate(self, messages, tools=None):
+        names = [t["function"]["name"] for t in tools] if tools else []
+        self.offered_tool_names.append(names)
+        return ModelResponse(text="Done.")
+
+
+def test_tool_router_narrows_offered_tools_for_specific_query(tmp_path):
+    # Mirrors the real 10-tool registry (main.py's build_tool_registry) —
+    # a 5-tool registry sharing generic "file"/"directory" vocabulary
+    # across most descriptions doesn't leave enough room to demonstrate
+    # narrowing; the structurally-distinct tools below don't share that
+    # vocabulary with a plain "list files" query.
+    from tools.find_callers import FindCallersTool
+    from tools.find_importers import FindImportersTool
+    from tools.find_symbol import FindSymbolTool
+    from tools.html_overview import HtmlOverviewTool
+    from tools.repo_overview import RepoOverviewTool
+
+    tools = ToolRegistry()
+    tools.register(ReadFileTool(tmp_path))
+    tools.register(ListDirectoryTool(tmp_path))
+    tools.register(SearchCodeTool(tmp_path))
+    tools.register(RunCommandTool(tmp_path))
+    tools.register(EditFileTool(tmp_path))
+    tools.register(RepoOverviewTool(tmp_path))
+    tools.register(FindSymbolTool(tmp_path))
+    tools.register(HtmlOverviewTool(tmp_path))
+    tools.register(FindImportersTool(tmp_path))
+    tools.register(FindCallersTool(tmp_path))
+    model = RecordingToolsModel()
+
+    run("List the files in the current directory", model, tools)
+
+    offered = model.offered_tool_names[0]
+    assert "list_directory" in offered
+    assert len(offered) < 10  # narrowed from the full 10 registered
+
+
+class SkipsSecondPartThenCorrectsModel(ModelInterface):
+    """Reproduces the exact live failure request_coverage.py was built to
+    fix: calls find_importers, then answers prematurely without ever
+    calling find_callers for the request's second part. request_coverage
+    now asks the model itself whether the answer is complete — that
+    verification call is always a single bare user-role message (no
+    system prompt, no history), which is how this fake distinguishes it
+    from the loop's normal decision calls. Only after that check reports
+    the gap does it go back and call find_callers."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+        self._verify_call_count = 0
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+
+        if len(messages) == 1:  # request_coverage's verification call
+            self._verify_call_count += 1
+            if self._verify_call_count == 1:
+                return ModelResponse(text="You never checked where cap_observation is actually called.")
+            return ModelResponse(text="COMPLETE")
+
+        tool_messages = [m for m in messages if m.role == "tool"]
+        user_messages = [m for m in messages if m.role == "user"]
+
+        if len(tool_messages) == 0:
+            return ModelResponse(
+                text=_call_text("find_importers", {"module_name": "repo_index.indexer"})
+            )
+        if len(tool_messages) == 1 and len(user_messages) == 1:
+            return ModelResponse(text="repo_index.indexer is imported by a.py.")
+        if len(tool_messages) == 1 and len(user_messages) == 2:
+            return ModelResponse(text=_call_text("find_callers", {"name": "cap_observation"}))
+        return ModelResponse(text="Imported by a.py; cap_observation is called in b.py.")
+
+
+def test_coverage_check_nudges_model_to_address_skipped_part(tmp_path):
+    from tools.find_callers import FindCallersTool
+    from tools.find_importers import FindImportersTool
+
+    tools = ToolRegistry()
+    tools.register(FindImportersTool(tmp_path))
+    tools.register(FindCallersTool(tmp_path))
+    model = SkipsSecondPartThenCorrectsModel()
+
+    answer = run(
+        "Which files import repo_index.indexer, and where is the function "
+        "cap_observation actually called?",
+        model,
+        tools,
+    )
+
+    assert answer == "Imported by a.py; cap_observation is called in b.py."
+    # find_callers must have actually been invoked at some point, not just
+    # mentioned in the final answer text
+    assert any(
+        m.role == "assistant" and "find_callers" in m.content
+        for messages in model.calls
+        for m in messages
+    )

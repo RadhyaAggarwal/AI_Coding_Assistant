@@ -21,17 +21,41 @@ from typing import Any
 from model_interface.base import ToolCall
 
 _CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
-_BARE_JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 _NAME_KEYS = ("name", "tool", "tool_name")
 _ARGS_KEYS = ("arguments", "parameters", "input", "args")
 
 
+def _find_balanced_json_objects(text: str) -> list[str]:
+    """Every top-level {...} span in text, found via brace-depth counting
+    rather than a greedy regex. A greedy r"\\{.*\\}" spans from the first
+    "{" to the very last "}" in the whole text — if the model writes out
+    more than one tool-call attempt back-to-back in a single response
+    (observed live: it planned two calls ahead and printed both JSON
+    objects one after another), that greedy span merges them into one
+    invalid blob that fails to parse at all, silently discarding both
+    attempts instead of recovering the first one.
+    """
+    blobs = []
+    depth = 0
+    start = None
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    blobs.append(text[start : i + 1])
+                    start = None
+    return blobs
+
+
 def _candidate_json_blobs(text: str) -> list[str]:
     blobs = [match.group(1) for match in _CODE_FENCE_RE.finditer(text)]
-    bare_match = _BARE_JSON_RE.search(text)
-    if bare_match:
-        blobs.append(bare_match.group(0))
+    blobs.extend(_find_balanced_json_objects(text))
     return blobs
 
 
