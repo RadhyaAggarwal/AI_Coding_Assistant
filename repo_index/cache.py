@@ -15,6 +15,15 @@ actually walked, so a deleted file's stale entry is dropped automatically
 rather than accumulating forever. A missing, corrupt, or (after a future
 model-shape change) incompatible cache is not worth failing over — it's
 treated as empty and rebuilt from scratch.
+
+Mtime+size alone only catches a file's *own* content changing — it has
+no way to know a future change to indexing logic itself (a parser bug
+fix, a language moving from unsupported to indexed, an extension-mapping
+change) should invalidate everything, not just files that happen to
+change afterward. _CACHE_VERSION covers that: bump it whenever indexing
+logic changes in a way that could produce different results for
+unchanged files, and every existing entry is treated as stale in one
+step, the same fail-safe way a missing/corrupt cache already is.
 """
 import json
 from dataclasses import asdict
@@ -24,6 +33,7 @@ from typing import Any
 from repo_index.models import CallSite, FileIndex, ImportEdge, Symbol
 
 _CACHE_FILENAME = "repo_index_cache.json"
+_CACHE_VERSION = 1
 
 
 def cache_path_for(root: Path) -> Path:
@@ -34,14 +44,19 @@ def load_cache(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
+    if not isinstance(data, dict) or data.get("version") != _CACHE_VERSION:
+        return {}  # missing/mismatched version -- treat as empty, force a full rebuild
+    return data.get("entries", {})
 
 
 def save_cache(path: Path, entries: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(entries), encoding="utf-8")
+    path.write_text(
+        json.dumps({"version": _CACHE_VERSION, "entries": entries}), encoding="utf-8"
+    )
 
 
 def is_fresh(entry: dict, mtime: float, size: int) -> bool:
