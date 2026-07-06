@@ -3,12 +3,21 @@ each file to the right language-specific indexer, and aggregates results
 into one flat symbol table for lookup by tools/find_symbol.py,
 tools/find_importers.py, tools/find_callers.py, and tools/repo_overview.py.
 
-No caching yet — each RepoIndex() call re-walks and re-parses the whole
-project. Fine at this project's current size; worth revisiting if this
-becomes slow on a larger repo.
+Per-file parse results are cached to disk (repo_index/cache.py), keyed
+by each file's mtime and size, so an unchanged file is never re-parsed —
+only re-walked (a cheap stat call) — on the next RepoIndex() build,
+whether that's later in the same request or a separate CLI invocation.
 """
 from pathlib import Path
 
+from repo_index.cache import (
+    cache_path_for,
+    entry_to_file_index,
+    file_index_to_entry,
+    is_fresh,
+    load_cache,
+    save_cache,
+)
 from repo_index.css_index import index_css_file
 from repo_index.html_index import index_html_file
 from repo_index.js_index import index_javascript_file
@@ -32,6 +41,10 @@ class RepoIndex:
         self._build()
 
     def _build(self) -> None:
+        cache_file = cache_path_for(self._root)
+        cached_entries = load_cache(cache_file)
+        fresh_entries: dict[str, dict] = {}
+
         for path in iter_project_files(self._root):
             language = EXTENSION_LANGUAGES.get(path.suffix.lower())
             indexer = _INDEXERS.get(language)
@@ -39,9 +52,27 @@ class RepoIndex:
                 continue
             relative_path = str(path.relative_to(self._root))
             try:
-                self.files[relative_path] = indexer(path, relative_path)
+                stat = path.stat()
+            except OSError:
+                continue
+
+            cached = cached_entries.get(relative_path)
+            if cached is not None and is_fresh(cached, stat.st_mtime, stat.st_size):
+                try:
+                    self.files[relative_path] = entry_to_file_index(cached)
+                    fresh_entries[relative_path] = cached
+                    continue
+                except (KeyError, TypeError):
+                    pass  # corrupt or incompatible cache entry -- fall through to re-parse
+
+            try:
+                file_index = indexer(path, relative_path)
             except (SyntaxError, UnicodeDecodeError, OSError):
                 continue
+            self.files[relative_path] = file_index
+            fresh_entries[relative_path] = file_index_to_entry(file_index, stat.st_mtime, stat.st_size)
+
+        save_cache(cache_file, fresh_entries)
 
     def find_symbol(self, name: str) -> list[Symbol]:
         needle = name.lower()
