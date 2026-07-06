@@ -26,6 +26,16 @@ class ToolRegistry:
     def schemas(self) -> list[dict[str, Any]]:
         return [tool.schema() for tool in self._tools.values()]
 
+    def confirmation_required_names(self) -> set[str]:
+        """Names of the tools requiring human confirmation to run (see
+        Tool.requires_confirmation) — the side-effecting minority whose
+        silent exclusion from a narrowed/routed tool list would break a
+        task, unlike the read-only majority. Used by
+        agent_controller.tool_router to protect them from keyword-overlap
+        scoring regardless of a request's wording.
+        """
+        return {tool.name for tool in self._tools.values() if tool.requires_confirmation}
+
     def execute(self, name: str, arguments: dict[str, Any]) -> str:
         if name not in self._tools:
             raise KeyError(f"No tool registered with name '{name}'")

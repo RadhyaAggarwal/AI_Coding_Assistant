@@ -58,3 +58,11 @@ def test_read_only_tool_never_prompts():
     registry.register(_FakeSafeTool())
 
     assert registry.execute("fake_safe", {}) == "ok"
+
+
+def test_confirmation_required_names_lists_only_confirmation_gated_tools():
+    registry = ToolRegistry(confirm=lambda description: True)
+    registry.register(_FakeRiskyTool())
+    registry.register(_FakeSafeTool())
+
+    assert registry.confirmation_required_names() == {"fake_risky"}

@@ -1,4 +1,10 @@
-from model_interface.tool_call_parsing import extract_tool_call
+import json
+
+from model_interface.tool_call_parsing import (
+    extract_tool_call,
+    extract_tool_calls,
+    looks_like_unparsed_tool_call,
+)
 
 
 def test_extracts_bare_json_tool_call():
@@ -73,3 +79,74 @@ def test_recovers_call_with_nested_object_argument():
     call = extract_tool_call(text, {"edit_file"})
     assert call is not None
     assert call.arguments == {"path": "a.py", "meta": {"nested": True}}
+
+
+def test_extract_tool_calls_returns_every_call_in_a_json_array():
+    """Reproduces the exact live shape: the model plans both parts of a
+    compound request at once as a JSON array of two calls."""
+    text = json.dumps(
+        [
+            {"name": "find_importers", "arguments": {"module_name": "agent_controller.tool_router"}},
+            {"name": "find_callers", "arguments": {"name": "snippet_at"}},
+        ]
+    )
+    calls = extract_tool_calls(text, {"find_importers", "find_callers"})
+    assert [c.name for c in calls] == ["find_importers", "find_callers"]
+    assert calls[0].arguments == {"module_name": "agent_controller.tool_router"}
+    assert calls[1].arguments == {"name": "snippet_at"}
+
+
+def test_extract_tool_calls_returns_every_call_when_written_back_to_back():
+    text = (
+        '{"name": "find_importers", "arguments": {"module_name": "a"}}\n\n'
+        '{"name": "find_callers", "arguments": {"name": "b"}}\n\n'
+        '{"name": "read_file", "arguments": {"path": "c"}}'
+    )
+    calls = extract_tool_calls(text, {"find_importers", "find_callers", "read_file"})
+    assert [c.name for c in calls] == ["find_importers", "find_callers", "read_file"]
+
+
+def test_extract_tool_calls_dedupes_identical_call_matched_twice():
+    """A single code-fenced call is matched both by the fence regex and by
+    the brace scan over the same span — that must collapse to one call,
+    not silently double-execute it."""
+    text = (
+        "Sure, let me check that.\n"
+        '```json\n{"name": "read_file", "arguments": {"path": "config.yaml"}}\n```\n'
+    )
+    calls = extract_tool_calls(text, {"read_file"})
+    assert len(calls) == 1
+
+
+def test_extract_tool_calls_returns_empty_list_for_plain_prose():
+    assert extract_tool_calls("Sure, here's a summary of the file.", {"read_file"}) == []
+
+
+def test_extract_tool_call_still_returns_only_the_first_of_several():
+    text = (
+        '{"name": "find_importers", "arguments": {"module_name": "a"}}\n\n'
+        '{"name": "find_callers", "arguments": {"name": "b"}}'
+    )
+    call = extract_tool_call(text, {"find_importers", "find_callers"})
+    assert call is not None
+    assert call.name == "find_importers"
+
+
+def test_looks_like_unparsed_tool_call_true_for_malformed_json():
+    """Reproduces the exact live shape: a docstring's own unescaped
+    quotes, embedded inside a JSON string value, break the JSON -- this
+    must be recognized as an attempted-but-failed call, not plain prose."""
+    text = (
+        '{"name": "edit_file", "arguments": {"path": "a.py", "search": "", '
+        '"replace": "def f():\\n    """docstring"""\\n    return 1"}}'
+    )
+    assert looks_like_unparsed_tool_call(text, {"edit_file"}) is True
+
+
+def test_looks_like_unparsed_tool_call_false_for_plain_prose():
+    assert looks_like_unparsed_tool_call("Sure, here's a summary.", {"read_file"}) is False
+
+
+def test_looks_like_unparsed_tool_call_false_when_a_valid_call_is_present():
+    text = '{"name": "read_file", "arguments": {"path": "a.py"}}'
+    assert looks_like_unparsed_tool_call(text, {"read_file"}) is False

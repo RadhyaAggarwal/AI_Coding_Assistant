@@ -17,7 +17,7 @@ from tools.registry import ToolRegistry
 from tools.run_command import RunCommandTool
 from tools.search_code import SearchCodeTool
 
-from agent_controller.loop import _MAX_STEPS, run
+from agent_controller.loop import _MAX_CALLS_PER_TURN, _MAX_STEPS, run
 
 
 def _call_text(name: str, arguments: dict) -> str:
@@ -399,3 +399,161 @@ def test_coverage_check_nudges_model_to_address_skipped_part(tmp_path):
         for messages in model.calls
         for m in messages
     )
+
+
+class TwoCallsPlannedInOneTurnModel(ModelInterface):
+    """Reproduces the exact live shape found via instrumentation: the
+    model plans both parts of a compound request as a single JSON array
+    in one turn, instead of one call per turn."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        tool_messages = [m for m in messages if m.role == "tool"]
+        if len(tool_messages) == 0:
+            return ModelResponse(
+                text=json.dumps(
+                    [
+                        {"name": "find_importers", "arguments": {"module_name": "agent_controller.tool_router"}},
+                        {"name": "find_callers", "arguments": {"name": "snippet_at"}},
+                    ]
+                )
+            )
+        return ModelResponse(text="Imported by loop.py; snippet_at is called in find_symbol.py.")
+
+
+def test_executes_every_tool_call_planned_in_a_single_turn(tmp_path):
+    from tools.find_callers import FindCallersTool
+    from tools.find_importers import FindImportersTool
+
+    tools = ToolRegistry()
+    tools.register(FindImportersTool(tmp_path))
+    tools.register(FindCallersTool(tmp_path))
+    model = TwoCallsPlannedInOneTurnModel()
+
+    answer = run(
+        "Which files import agent_controller.tool_router, and where is snippet_at called?",
+        model,
+        tools,
+    )
+
+    assert answer == "Imported by loop.py; snippet_at is called in find_symbol.py."
+    # Only 2 model calls needed: one turn planning both calls, one to
+    # answer -- both tool calls must have executed within that single
+    # planning turn rather than the second being silently dropped.
+    assert len(model.calls) == 2
+    final_messages = model.calls[-1]
+    tool_messages = [m for m in final_messages if m.role == "tool"]
+    assert len(tool_messages) == 2
+
+
+class ThreeDistinctCallsInOneTurnModel(ModelInterface):
+    """Not a 2-call special case: plans three *different* tools in one
+    turn, under the per-turn cap, to prove the loop-level execution isn't
+    hardcoded to the exact pair observed live."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        tool_messages = [m for m in messages if m.role == "tool"]
+        if len(tool_messages) == 0:
+            return ModelResponse(
+                text=json.dumps(
+                    [
+                        {"name": "search_code", "arguments": {"query": "login"}},
+                        {"name": "read_file", "arguments": {"path": "auth.py"}},
+                        {"name": "list_directory", "arguments": {"path": "."}},
+                    ]
+                )
+            )
+        return ModelResponse(text="FINAL ANSWER FROM THREE TOOLS")
+
+
+def test_executes_three_distinct_calls_planned_in_a_single_turn(tmp_path):
+    (tmp_path / "auth.py").write_text("def login():\n    pass\n", encoding="utf-8")
+    tools = ToolRegistry()
+    tools.register(SearchCodeTool(tmp_path))
+    tools.register(ReadFileTool(tmp_path))
+    tools.register(ListDirectoryTool(tmp_path))
+    model = ThreeDistinctCallsInOneTurnModel()
+
+    answer = run("Find the login function, read it, and list the directory", model, tools)
+
+    assert answer == "FINAL ANSWER FROM THREE TOOLS"
+    assert len(model.calls) == 2  # one planning turn, one answer turn
+    final_messages = model.calls[-1]
+    tool_messages = [m for m in final_messages if m.role == "tool"]
+    assert len(tool_messages) == 3
+
+
+class TooManyCallsInOneTurnModel(ModelInterface):
+    """Plans an implausible number of calls in a single turn -- more
+    likely garbage than a real plan; the loop should bound how many it
+    trusts and runs from one turn."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        tool_messages = [m for m in messages if m.role == "tool"]
+        if len(tool_messages) == 0:
+            return ModelResponse(
+                text=json.dumps(
+                    [{"name": "read_file", "arguments": {"path": f"f{i}.txt"}} for i in range(6)]
+                )
+            )
+        return ModelResponse(text="Done.")
+
+
+def test_caps_how_many_calls_from_one_turn_are_executed(tmp_path):
+    for i in range(6):
+        (tmp_path / f"f{i}.txt").write_text(f"content{i}", encoding="utf-8")
+    tools = ToolRegistry()
+    tools.register(ReadFileTool(tmp_path))
+    model = TooManyCallsInOneTurnModel()
+
+    run("Read all six files", model, tools)
+
+    final_messages = model.calls[-1]
+    tool_messages = [m for m in final_messages if m.role == "tool"]
+    assert len(tool_messages) == _MAX_CALLS_PER_TURN
+
+
+class MalformedThenValidAnswerModel(ModelInterface):
+    """Reproduces the exact live failure: first turn emits a tool-call
+    attempt broken by an embedded docstring's own unescaped quotes;
+    second turn (after being nudged) gives a genuine plain-text answer."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        if len(self.calls) == 1:
+            return ModelResponse(
+                text=(
+                    '{"name": "edit_file", "arguments": {"path": "a.py", "search": "", '
+                    '"replace": "def f():\\n    """docstring"""\\n    return 1"}}'
+                )
+            )
+        return ModelResponse(text="Fixed the function.")
+
+
+def test_malformed_tool_call_attempt_is_not_returned_as_final_answer(tmp_path):
+    tools = ToolRegistry(confirm=lambda description: True)
+    tools.register(EditFileTool(tmp_path))
+    model = MalformedThenValidAnswerModel()
+
+    answer = run("Fix the bug in a.py", model, tools)
+
+    assert answer == "Fixed the function."
+    assert "docstring" not in answer  # the broken JSON must never leak through as the answer
+    assert len(model.calls) == 2
+    nudge_message = model.calls[1][-1]
+    assert nudge_message.role == "user"
+    assert "didn't parse" in nudge_message.content

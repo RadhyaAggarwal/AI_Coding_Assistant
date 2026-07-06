@@ -10,10 +10,18 @@ straightforward instead of a rewrite.
 
 Local models are unreliable in ways that matter a lot more once a loop
 can run several steps (Build Plan Addendum 2.2: "degrading plan quality
-over long ReAct loops"), so this loop defends against four failure modes
+over long ReAct loops"), so this loop defends against six failure modes
 rather than trusting the model to self-regulate:
   - Not using the backend's structured tool-calling field at all, just
-    writing the JSON as plain text. _resolve_tool_call() recovers that.
+    writing the JSON as plain text. _resolve_tool_calls() recovers that.
+  - Planning more than one tool call in a single turn (e.g. a JSON array
+    covering both parts of a compound request) and having all but the
+    first silently discarded. Observed live: the model correctly planned
+    find_importers + find_callers together, only the first ran, and the
+    model then reported a false "no calls found" for the one that never
+    executed instead of realizing it was never checked. _resolve_tool_calls()
+    (plural) and the per-call loop below run every call from one turn,
+    not just the first, bounded by _MAX_CALLS_PER_TURN.
   - Passing arguments that don't match the tool's schema, or naming a
     tool that fails outright. Fed back as a "tool" turn so the model can
     correct itself, instead of the loop crashing.
@@ -30,6 +38,15 @@ rather than trusting the model to self-regulate:
     match with no shared vocabulary, e.g. "the RepoIndex class" needing
     find_symbol, isn't something keyword matching can do reliably), and
     gets one nudge to fix it before finishing.
+  - Attempting a tool call that fails to parse at all (e.g. a docstring's
+    unescaped quotes breaking a JSON string value it's embedded in) and
+    having the leftover raw, broken-looking text silently returned to the
+    user as if it were a genuine final answer — worse than no answer.
+    looks_like_unparsed_tool_call() (model_interface/tool_call_parsing.py)
+    distinguishes "no tool call was attempted" from "one was attempted
+    and broke" by reusing the same brace-scan extraction already does; a
+    detected broken attempt gets fed back as a nudge to fix the JSON
+    instead of being handed to the user.
 A hard step budget bounds all of the above combined, so a model that
 never converges can't run forever.
 """
@@ -40,7 +57,7 @@ from agent_controller.context_budget import cap_observation, trim_to_budget
 from agent_controller.request_coverage import find_unaddressed_part
 from agent_controller.tool_router import route_tools
 from model_interface.base import Message, ModelInterface, ModelResponse, ToolCall
-from model_interface.tool_call_parsing import extract_tool_call
+from model_interface.tool_call_parsing import extract_tool_calls, looks_like_unparsed_tool_call
 from tools.registry import ToolRegistry
 
 _SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "system_prompt.md"
@@ -53,22 +70,34 @@ _DEFAULT_CONTEXT_WINDOW_TOKENS = 8192
 # machine's CPU-only inference, so this is a real latency tradeoff, not a
 # free increase — raise further only if a realistic task still runs out.
 _MAX_STEPS = 6
+# Observed live: a model can plan several tool calls in a single turn (a
+# JSON array covering both parts of a compound request) — a real plan,
+# not garbage, and worth executing in full within that one step (see
+# _resolve_tool_calls). This bounds how many calls from one turn we'll
+# trust and run, the same defensive-against-unreliable-output posture as
+# the rest of this loop, in case a bad turn ever lists an implausible
+# number of calls.
+_MAX_CALLS_PER_TURN = 4
 
 
 def _load_system_prompt() -> str:
     return _SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
 
 
-def _resolve_tool_call(response: ModelResponse, known_tool_names: set[str]) -> ToolCall | None:
+def _resolve_tool_calls(response: ModelResponse, known_tool_names: set[str]) -> list[ToolCall]:
     if response.tool_calls:
-        return response.tool_calls[0]
-    return extract_tool_call(response.text, known_tool_names)
+        calls = list(response.tool_calls)
+    else:
+        calls = extract_tool_calls(response.text, known_tool_names)
+    return calls[:_MAX_CALLS_PER_TURN]
 
 
-def _assistant_turn_content(response: ModelResponse, call: ToolCall) -> str:
+def _assistant_turn_content(response: ModelResponse, calls: list[ToolCall]) -> str:
     # Preserve exactly what the model said when it said anything; only
     # synthesize a stand-in when native tool_calls left the text empty.
-    return response.text or json.dumps({"name": call.name, "arguments": call.arguments})
+    if response.text:
+        return response.text
+    return json.dumps([{"name": call.name, "arguments": call.arguments} for call in calls])
 
 
 def _call_key(call: ToolCall) -> tuple[str, str]:
@@ -86,17 +115,33 @@ def run(
         Message(role="user", content=user_request),
     ]
     known_tool_names = {schema["function"]["name"] for schema in tools.schemas()}
+    always_keep_names = frozenset(tools.confirmation_required_names())
     already_called: set[tuple[str, str]] = set()
     coverage_nudge_used = False
 
     for _ in range(_MAX_STEPS):
         sendable = trim_to_budget(messages, context_window_tokens)
         query_text = " ".join(m.content for m in sendable if m.role != "system")
-        offered_tools = route_tools(query_text, tools.schemas())
+        offered_tools = route_tools(query_text, tools.schemas(), always_keep_names=always_keep_names)
         response = model.generate(sendable, tools=offered_tools)
-        call = _resolve_tool_call(response, known_tool_names)
+        calls = _resolve_tool_calls(response, known_tool_names)
 
-        if call is None:
+        if not calls:
+            if looks_like_unparsed_tool_call(response.text, known_tool_names):
+                messages.append(Message(role="assistant", content=response.text))
+                messages.append(
+                    Message(
+                        role="user",
+                        content=(
+                            "That didn't parse as a valid tool call — check for "
+                            "unescaped quotes or other JSON syntax errors (e.g. a "
+                            "docstring's quotes breaking a string value) and no "
+                            "tool ran. Fix the JSON and try again, or answer in "
+                            "plain text without attempting a tool call."
+                        ),
+                    )
+                )
+                continue
             if not coverage_nudge_used:
                 unaddressed = find_unaddressed_part(user_request, response.text, model)
                 if unaddressed is not None:
@@ -116,35 +161,36 @@ def run(
             return response.text
 
         messages.append(
-            Message(role="assistant", content=_assistant_turn_content(response, call))
+            Message(role="assistant", content=_assistant_turn_content(response, calls))
         )
 
-        if _call_key(call) in already_called:
-            messages.append(
-                Message(
-                    role="tool",
-                    content=(
-                        "You already called this exact tool with these exact "
-                        "arguments. Use the observation you already have to "
-                        "answer, or call a different tool."
-                    ),
+        for call in calls:
+            if _call_key(call) in already_called:
+                messages.append(
+                    Message(
+                        role="tool",
+                        content=(
+                            "You already called this exact tool with these exact "
+                            "arguments. Use the observation you already have to "
+                            "answer, or call a different tool."
+                        ),
+                    )
                 )
-            )
-            continue
+                continue
 
-        try:
-            observation = tools.execute(call.name, call.arguments)
-        except Exception as exc:
-            messages.append(
-                Message(
-                    role="tool",
-                    content=f"Error: {exc}. Correct the call and try again, or answer directly if you can't.",
+            try:
+                observation = tools.execute(call.name, call.arguments)
+            except Exception as exc:
+                messages.append(
+                    Message(
+                        role="tool",
+                        content=f"Error: {exc}. Correct the call and try again, or answer directly if you can't.",
+                    )
                 )
-            )
-            continue
+                continue
 
-        already_called.add(_call_key(call))
-        messages.append(Message(role="tool", content=cap_observation(observation)))
+            already_called.add(_call_key(call))
+            messages.append(Message(role="tool", content=cap_observation(observation)))
 
     # Step budget exhausted. Ask once more, without tool access, so the
     # model synthesizes an answer from whatever it gathered rather than
@@ -152,6 +198,8 @@ def run(
     # tool anyway, don't leak that raw attempt to the user as if it were
     # a real answer.
     final_response = model.generate(trim_to_budget(messages, context_window_tokens))
-    if _resolve_tool_call(final_response, known_tool_names) is not None:
+    if _resolve_tool_calls(final_response, known_tool_names) or looks_like_unparsed_tool_call(
+        final_response.text, known_tool_names
+    ):
         return f"Could not complete the request within {_MAX_STEPS} steps."
     return final_response.text

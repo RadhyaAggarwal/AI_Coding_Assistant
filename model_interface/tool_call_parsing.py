@@ -66,12 +66,25 @@ def _first_present(d: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return None
 
 
-def extract_tool_call(text: str, known_tool_names: set[str]) -> ToolCall | None:
-    """Look for a {name, arguments}-shaped JSON object naming a known tool.
+def extract_tool_calls(text: str, known_tool_names: set[str]) -> list[ToolCall]:
+    """Look for every {name, arguments}-shaped JSON object naming a known
+    tool, not just the first.
 
-    Returns None if nothing plausible is found — callers should treat that
-    as "the model didn't attempt a tool call," not as an error.
+    Observed live: a model can legitimately plan several tool calls in one
+    turn (e.g. a JSON array covering both parts of a compound request).
+    Stopping at the first meant the model never learned its later calls
+    didn't run, and would go on to report a false negative for whatever
+    they would have found instead of noticing the gap. Duplicate calls
+    (same name and arguments) are collapsed to one — a single code-fenced
+    call is otherwise matched twice, once by the fence regex and once by
+    the brace scan on the same span, and re-running an identical call
+    within one turn carries no new information anyway.
+
+    Returns an empty list if nothing plausible is found — callers should
+    treat that as "the model didn't attempt a tool call," not as an error.
     """
+    calls: list[ToolCall] = []
+    seen: set[tuple[str, str]] = set()
     for blob in _candidate_json_blobs(text):
         try:
             parsed = json.loads(blob)
@@ -90,6 +103,45 @@ def extract_tool_call(text: str, known_tool_names: set[str]) -> ToolCall | None:
         if not isinstance(arguments, dict):
             continue
 
-        return ToolCall(name=name, arguments=arguments)
+        key = (name, json.dumps(arguments, sort_keys=True))
+        if key in seen:
+            continue
+        seen.add(key)
+        calls.append(ToolCall(name=name, arguments=arguments))
 
-    return None
+    return calls
+
+
+def extract_tool_call(text: str, known_tool_names: set[str]) -> ToolCall | None:
+    """Look for a {name, arguments}-shaped JSON object naming a known tool.
+
+    Returns None if nothing plausible is found — callers should treat that
+    as "the model didn't attempt a tool call," not as an error. Kept
+    alongside extract_tool_calls() (plural) for callers that only ever
+    want the first/only call.
+    """
+    calls = extract_tool_calls(text, known_tool_names)
+    return calls[0] if calls else None
+
+
+def looks_like_unparsed_tool_call(text: str, known_tool_names: set[str]) -> bool:
+    """True if text contains a brace-balanced {...} span that didn't
+    resolve into any valid call — evidence the model was attempting a
+    tool call and produced something malformed (e.g. an unescaped quote
+    from an embedded docstring breaking the JSON string it sits in), not
+    that it gave a genuine prose answer.
+
+    Observed live: a model embedded a real docstring (with its own
+    unescaped quote characters) inside a JSON "replace" argument, making
+    the JSON invalid. extract_tool_calls() correctly discarded it (as it
+    should — this module doesn't guess at malformed JSON), but the caller
+    then had nothing to distinguish "no tool call was attempted" from
+    "one was attempted and broke," and the raw broken JSON got returned
+    to the user as if it were a final answer. This reuses the same
+    brace-depth scan _candidate_json_blobs() already does — if it found a
+    span at all, something was attempted, regardless of whether it went
+    on to parse.
+    """
+    if extract_tool_calls(text, known_tool_names):
+        return False
+    return bool(_candidate_json_blobs(text))
