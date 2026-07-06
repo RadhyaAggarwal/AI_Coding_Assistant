@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 @dataclass
 class Symbol:
     name: str
-    kind: str  # "function" | "method" | "class"
+    kind: str  # "function" | "method" | "class" (Python/JS) | "selector" | "keyframes" (CSS) | "element" (HTML)
     file: str  # path relative to project root
     line: int  # 1-indexed
 

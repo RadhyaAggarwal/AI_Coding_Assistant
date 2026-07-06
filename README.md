@@ -9,9 +9,13 @@ The agent understands a project's structure (Python/JavaScript/CSS/HTML
 symbol indexing via `ast` and tree-sitter), can search and read files,
 run shell commands, and make validated, snapshotted, human-confirmed
 edits — chaining multiple tool calls per request (e.g. edit a file, then
-run its tests to verify the fix actually works). Not yet built: a
-self-correction loop beyond what fits in one request's step budget, and
-team/multi-developer features.
+run its tests to verify the fix actually works). Beyond file/symbol
+lookup (`find_symbol`, `repo_overview`, `html_overview`), it can also
+trace cross-file relationships — which files import a given module
+(`find_importers`) and where a function is actually called from
+(`find_callers`) — for questions that span more than one file. Not yet
+built: a self-correction loop beyond what fits in one request's step
+budget, and team/multi-developer features.
 
 ## Quickstart
 

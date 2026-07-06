@@ -4,7 +4,7 @@
 A Python application that acts as an agentic coding assistant, powered by a
 locally-hosted open-source LLM (served via Ollama) instead of any third-party
 API. It must work across languages (Python, HTML, CSS, JS, etc.), not just
-Python. See `Build_Plan.pdf` and `Build_Plan_Addendum.pdf` in the project root
+Python. See `AI-Coding Agent.pdf` and `Build_Plan_Addendum.pdf` in the project root
 for full background — read both before starting significant work.
 
 ## Architecture — module boundaries (do not violate)
