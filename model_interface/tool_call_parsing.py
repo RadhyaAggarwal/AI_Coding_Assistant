@@ -127,43 +127,69 @@ def extract_tool_call(text: str, known_tool_names: set[str]) -> ToolCall | None:
 _NAME_KEY_PATTERN = re.compile(
     r'"(?:' + "|".join(_NAME_KEYS) + r')"\s*:\s*"([^"]*)"'
 )
+_ARGS_KEY_PATTERN = re.compile(r'"(?:' + "|".join(_ARGS_KEYS) + r')"\s*:')
 
 
-def looks_like_unparsed_tool_call(text: str, known_tool_names: set[str]) -> bool:
-    """True only for a {...} span that fails to parse as JSON at all but
-    still carries the literal signature of a tool-call attempt — a
-    "name"/"tool"/"tool_name" key naming one of the offered tools,
-    present in the raw text even though the surrounding JSON is broken.
+def mentions_tool_call_attempt(text: str, known_tool_names: set[str]) -> bool:
+    """True if a candidate JSON blob in text names a known tool (via the
+    same name-key convention extract_tool_calls() recognizes) AND
+    supplies something under an arguments-like key — regardless of
+    whether the blob is valid JSON, or whether that value is the right
+    shape. That combination is the actual signature of a genuine (if
+    broken) tool-call attempt, as opposed to text that merely happens to
+    mention a tool's name with no accompanying arguments at all, which is
+    far more likely incidental than a real attempt.
 
-    Observed live (the case this exists for): a model embedded a real
-    docstring (with its own unescaped quote characters) inside a JSON
-    "replace" argument, making the JSON invalid. extract_tool_calls()
-    correctly discarded it, but the caller then had nothing to
-    distinguish "no tool call was attempted" from "one was attempted and
-    broke," and the raw broken JSON got returned to the user as if it
-    were a final answer.
+    Requiring *both* signals exists because either one alone is wrong in
+    a different direction, both found live on the same night:
+      - Name alone is too loose: asked to summarize a YAML file, the
+        model answered by re-emitting its contents as a plain,
+        syntactically valid JSON object with fields like "endpoint_url"
+        and "model_name" — no name/tool/tool_name key at all, so this
+        alone was already excluded by an earlier version requiring a
+        name match, but a *different* case slipped through the other
+        way: a genuine final answer that happened to mention a real
+        tool's name in JSON-ish shape with no arguments key at all (e.g.
+        `{"name": "read_file", "note": "..."}`) resolved as a fully
+        valid, executable call with an empty-defaulted argument dict,
+        which caused a real answer to be discarded. Requiring an
+        arguments-like key too means an incidental mention (which has no
+        reason to include one) doesn't count, while an actual attempt
+        (which supplies one, even wrong-shaped) does.
+      - Parseability alone is too loose in the other direction: a model
+        can write syntactically *valid* JSON that names a real tool but
+        gets the shape wrong, e.g. `{"name": "read_file", "arguments":
+        "config.yaml"}` (a bare string instead of an object) — this
+        parses fine but extract_tool_calls() rejects it (arguments isn't
+        a dict), and a version of this function that only reacted to
+        JSON *parse failures* missed it entirely, silently returning the
+        broken JSON to the user as if it were a real answer.
 
-    An earlier version of this function treated *any* brace-balanced
-    span with zero resolved calls as evidence of a broken attempt. That
-    over-fired on a real, different live case: asked to summarize a YAML
-    file, the model answered by re-emitting its contents as a plain
-    (syntactically valid, unrelated-to-any-tool) JSON object — a
-    legitimate, if unhelpfully-formatted, answer with no tool-call intent
-    at all. Treating it as "broken JSON, please fix" sent the loop into
-    a nudge/retry cycle the model had no way to resolve, since there was
-    nothing to fix. Requiring the blob to both fail to parse *and* name
-    a real tool distinguishes an actual failed attempt from ordinary
-    prose that merely happens to contain balanced braces.
+    Two distinct call sites in agent_controller.loop.run() rely on this:
+    the per-step branch only ever reaches it after extract_tool_calls()
+    already found nothing resolvable, so here a positive result always
+    means "attempted but broken/malformed," not "fully valid." The final
+    step-budget-exhausted fallback needs the broader question — "is the
+    model still trying to invoke a tool at all," even for an attempt that
+    WOULD otherwise resolve cleanly — since no tools are offered at that
+    point, so any such attempt is itself evidence something is still
+    fixated on tool-call syntax rather than answering.
     """
-    if extract_tool_calls(text, known_tool_names):
-        return False
     for blob in _candidate_json_blobs(text):
         try:
-            json.loads(blob)
-            continue  # parsed fine -- just irrelevant JSON, not a broken attempt
+            parsed = json.loads(blob)
         except json.JSONDecodeError:
-            pass
-        match = _NAME_KEY_PATTERN.search(blob)
-        if match and match.group(1) in known_tool_names:
+            name_match = _NAME_KEY_PATTERN.search(blob)
+            if name_match and name_match.group(1) in known_tool_names and _ARGS_KEY_PATTERN.search(blob):
+                return True
+            continue
+
+        if not isinstance(parsed, dict):
+            continue
+        name = _first_present(parsed, _NAME_KEYS)
+        if not isinstance(name, str) or name not in known_tool_names:
+            continue
+        if _first_present(parsed, _ARGS_KEYS) is not None:
             return True
+
     return False

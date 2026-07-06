@@ -556,7 +556,7 @@ def test_malformed_tool_call_attempt_is_not_returned_as_final_answer(tmp_path):
     assert len(model.calls) == 2
     nudge_message = model.calls[1][-1]
     assert nudge_message.role == "user"
-    assert "didn't parse" in nudge_message.content
+    assert "didn't resolve" in nudge_message.content
 
 
 class SummarizesAsPlainJsonModel(ModelInterface):
@@ -588,3 +588,67 @@ def test_plain_json_answer_with_no_tool_call_intent_is_accepted(tmp_path):
 
     assert answer == '{"endpoint_url": "http://localhost:11434", "model_name": "x"}'
     assert len(model.calls) == 2  # must not burn the whole step budget nudging forever
+
+
+class WrongShapedArgumentsThenValidAnswerModel(ModelInterface):
+    """Reproduces a real gap found in a post-session audit: valid JSON
+    naming a real tool, but "arguments" is a bare string instead of an
+    object. extract_tool_calls() correctly rejects this (wrong shape),
+    and it must still be recognized as an attempted-but-broken call --
+    not silently returned as the final answer -- then corrected after
+    being nudged."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        if len(self.calls) == 1:
+            return ModelResponse(text='{"name": "read_file", "arguments": "config.yaml"}')
+        return ModelResponse(text="Fixed the function.")
+
+
+def test_wrong_shaped_arguments_are_not_returned_as_final_answer(tmp_path):
+    tools = ToolRegistry()
+    tools.register(ReadFileTool(tmp_path))
+    model = WrongShapedArgumentsThenValidAnswerModel()
+
+    answer = run("Read config.yaml", model, tools)
+
+    assert answer == "Fixed the function."
+    assert len(model.calls) == 2
+    nudge_message = model.calls[1][-1]
+    assert nudge_message.role == "user"
+    assert "didn't resolve" in nudge_message.content
+
+
+class CoincidentalToolNameMentionAtBudgetExhaustionModel(ModelInterface):
+    """Reproduces a real gap found in a post-session audit: a model that
+    burns the whole step budget on a repeated call, then gives a genuine
+    final answer (at the no-tools-offered fallback call) that happens to
+    mention a real tool's name in JSON-ish shape with no arguments key --
+    this must not be discarded in favor of the generic "could not
+    complete" message, since it's an incidental mention, not evidence the
+    model is still trying to invoke a tool."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        if tools:
+            return ModelResponse(text=_call_text("read_file", {"path": "sample.txt"}))
+        return ModelResponse(
+            text='{"name": "read_file", "note": "the config mentions read_file settings"}'
+        )
+
+
+def test_coincidental_tool_name_mention_not_discarded_at_final_fallback(tmp_path):
+    (tmp_path / "sample.txt").write_text("sample contents", encoding="utf-8")
+    tools = ToolRegistry()
+    tools.register(ReadFileTool(tmp_path))
+    model = CoincidentalToolNameMentionAtBudgetExhaustionModel()
+
+    answer = run("Summarize sample.txt", model, tools)
+
+    assert answer == '{"name": "read_file", "note": "the config mentions read_file settings"}'

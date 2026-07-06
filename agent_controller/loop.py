@@ -38,15 +38,21 @@ rather than trusting the model to self-regulate:
     match with no shared vocabulary, e.g. "the RepoIndex class" needing
     find_symbol, isn't something keyword matching can do reliably), and
     gets one nudge to fix it before finishing.
-  - Attempting a tool call that fails to parse at all (e.g. a docstring's
-    unescaped quotes breaking a JSON string value it's embedded in) and
-    having the leftover raw, broken-looking text silently returned to the
-    user as if it were a genuine final answer — worse than no answer.
-    looks_like_unparsed_tool_call() (model_interface/tool_call_parsing.py)
-    distinguishes "no tool call was attempted" from "one was attempted
-    and broke" by reusing the same brace-scan extraction already does; a
-    detected broken attempt gets fed back as a nudge to fix the JSON
-    instead of being handed to the user.
+  - Attempting a tool call that's broken in some way (fails to parse at
+    all, e.g. a docstring's unescaped quotes breaking a JSON string
+    value; or parses fine but has the wrong shape, e.g. "arguments" as a
+    bare string instead of an object) and having the leftover raw,
+    broken-looking text silently returned to the user as if it were a
+    genuine final answer — worse than no answer.
+    mentions_tool_call_attempt() (model_interface/tool_call_parsing.py)
+    requires both a name-key match AND an arguments-like key to treat
+    something as an attempt, which is what actually distinguishes a real
+    (if broken) attempt from ordinary text that merely mentions a tool's
+    name or happens to contain unrelated JSON — see that function's
+    docstring for two different live cases that broke a version of this
+    check requiring only one signal or the other. A detected attempt gets
+    fed back as a nudge to fix the JSON instead of being handed to the
+    user.
 A hard step budget bounds all of the above combined, so a model that
 never converges can't run forever.
 """
@@ -57,7 +63,7 @@ from agent_controller.context_budget import cap_observation, trim_to_budget
 from agent_controller.request_coverage import find_unaddressed_part
 from agent_controller.tool_router import route_tools
 from model_interface.base import Message, ModelInterface, ModelResponse, ToolCall
-from model_interface.tool_call_parsing import extract_tool_calls, looks_like_unparsed_tool_call
+from model_interface.tool_call_parsing import extract_tool_calls, mentions_tool_call_attempt
 from tools.registry import ToolRegistry
 
 _SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "system_prompt.md"
@@ -127,17 +133,19 @@ def run(
         calls = _resolve_tool_calls(response, known_tool_names)
 
         if not calls:
-            if looks_like_unparsed_tool_call(response.text, known_tool_names):
+            if mentions_tool_call_attempt(response.text, known_tool_names):
                 messages.append(Message(role="assistant", content=response.text))
                 messages.append(
                     Message(
                         role="user",
                         content=(
-                            "That didn't parse as a valid tool call — check for "
-                            "unescaped quotes or other JSON syntax errors (e.g. a "
-                            "docstring's quotes breaking a string value) and no "
-                            "tool ran. Fix the JSON and try again, or answer in "
-                            "plain text without attempting a tool call."
+                            "That didn't resolve as a valid tool call — check that "
+                            "the JSON is syntactically valid (no unescaped quotes "
+                            "breaking a string value, e.g. from an embedded "
+                            "docstring) and that 'arguments' is an object, not a "
+                            "bare string or other value. No tool ran. Fix it and "
+                            "try again, or answer in plain text without "
+                            "attempting a tool call."
                         ),
                     )
                 )
@@ -195,11 +203,12 @@ def run(
     # Step budget exhausted. Ask once more, without tool access, so the
     # model synthesizes an answer from whatever it gathered rather than
     # the loop just giving up with nothing. If it still tries to call a
-    # tool anyway, don't leak that raw attempt to the user as if it were
-    # a real answer.
+    # tool anyway (native structured call, or the same name+arguments
+    # signature mentions_tool_call_attempt() checks for elsewhere), don't
+    # leak that raw attempt to the user as if it were a real answer --
+    # unlike the per-step branch there's no budget left to nudge a retry,
+    # so this is a hard stop rather than another chance.
     final_response = model.generate(trim_to_budget(messages, context_window_tokens))
-    if _resolve_tool_calls(final_response, known_tool_names) or looks_like_unparsed_tool_call(
-        final_response.text, known_tool_names
-    ):
+    if final_response.tool_calls or mentions_tool_call_attempt(final_response.text, known_tool_names):
         return f"Could not complete the request within {_MAX_STEPS} steps."
     return final_response.text

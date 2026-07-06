@@ -3,7 +3,7 @@ import json
 from model_interface.tool_call_parsing import (
     extract_tool_call,
     extract_tool_calls,
-    looks_like_unparsed_tool_call,
+    mentions_tool_call_attempt,
 )
 
 
@@ -132,7 +132,7 @@ def test_extract_tool_call_still_returns_only_the_first_of_several():
     assert call.name == "find_importers"
 
 
-def test_looks_like_unparsed_tool_call_true_for_malformed_json():
+def test_mentions_tool_call_attempt_true_for_malformed_json():
     """Reproduces the exact live shape: a docstring's own unescaped
     quotes, embedded inside a JSON string value, break the JSON -- this
     must be recognized as an attempted-but-failed call, not plain prose."""
@@ -140,19 +140,27 @@ def test_looks_like_unparsed_tool_call_true_for_malformed_json():
         '{"name": "edit_file", "arguments": {"path": "a.py", "search": "", '
         '"replace": "def f():\\n    """docstring"""\\n    return 1"}}'
     )
-    assert looks_like_unparsed_tool_call(text, {"edit_file"}) is True
+    assert mentions_tool_call_attempt(text, {"edit_file"}) is True
 
 
-def test_looks_like_unparsed_tool_call_false_for_plain_prose():
-    assert looks_like_unparsed_tool_call("Sure, here's a summary.", {"read_file"}) is False
+def test_mentions_tool_call_attempt_false_for_plain_prose():
+    assert mentions_tool_call_attempt("Sure, here's a summary.", {"read_file"}) is False
 
 
-def test_looks_like_unparsed_tool_call_false_when_a_valid_call_is_present():
+def test_mentions_tool_call_attempt_true_when_a_valid_call_is_present():
+    """Unlike the per-step call site (which only ever reaches this
+    function after extract_tool_calls() already found nothing, so a True
+    here always means "broken"), the final step-budget-exhausted fallback
+    needs this to also be True for a fully valid, resolvable call --
+    since no tools are offered at that point, any such attempt (broken or
+    not) means the model is still fixated on tool-call syntax rather than
+    answering, and that fallback shouldn't hand the raw JSON to the user
+    either way."""
     text = '{"name": "read_file", "arguments": {"path": "a.py"}}'
-    assert looks_like_unparsed_tool_call(text, {"read_file"}) is False
+    assert mentions_tool_call_attempt(text, {"read_file"}) is True
 
 
-def test_looks_like_unparsed_tool_call_false_for_valid_unrelated_json():
+def test_mentions_tool_call_attempt_false_for_valid_unrelated_json():
     """Reproduces a real live regression: asked to summarize a YAML file,
     the model answered by re-emitting its contents as a plain,
     syntactically valid JSON object with no tool-call intent at all (no
@@ -167,10 +175,10 @@ def test_looks_like_unparsed_tool_call_false_for_valid_unrelated_json():
         "}\n"
         "```"
     )
-    assert looks_like_unparsed_tool_call(text, {"read_file", "edit_file"}) is False
+    assert mentions_tool_call_attempt(text, {"read_file", "edit_file"}) is False
 
 
-def test_looks_like_unparsed_tool_call_false_when_broken_json_names_unknown_tool():
+def test_mentions_tool_call_attempt_false_when_broken_json_names_unknown_tool():
     """Broken JSON that doesn't reference any tool the model was actually
     offered is treated the same as a well-formed-but-unknown-name call
     already is elsewhere in this module: not a call attempt worth
@@ -180,4 +188,30 @@ def test_looks_like_unparsed_tool_call_false_when_broken_json_names_unknown_tool
         '{"name": "delete_everything", "arguments": {"path": "a.py", '
         '"extra": "def f():\\n    """doc"""\\n"}}'
     )
-    assert looks_like_unparsed_tool_call(text, {"edit_file"}) is False
+    assert mentions_tool_call_attempt(text, {"edit_file"}) is False
+
+
+def test_mentions_tool_call_attempt_true_for_valid_json_with_wrong_shaped_arguments():
+    """Reproduces a real gap found in a post-session audit: valid JSON
+    naming a real tool, but "arguments" is a bare string instead of an
+    object -- extract_tool_calls() correctly rejects this (wrong shape),
+    but a version of this function that only reacted to JSON parse
+    *failures* missed it entirely, since this parses fine. The model
+    still clearly named a real tool and supplied something under an
+    arguments-like key, which is enough to call it an attempt even though
+    it never fails to parse."""
+    text = '{"name": "read_file", "arguments": "config.yaml"}'
+    assert mentions_tool_call_attempt(text, {"read_file"}) is True
+
+
+def test_mentions_tool_call_attempt_false_for_tool_name_mentioned_with_no_arguments_key():
+    """Reproduces a real gap found in a post-session audit: a genuine
+    final answer that happens to mention a real tool's name in JSON-ish
+    shape, with no arguments key at all, previously resolved as a fully
+    valid call with an empty-defaulted argument dict (extract_tool_calls
+    defaults a missing arguments key to {}) -- which discarded a real
+    answer at the final-fallback call site. Requiring an arguments-like
+    key too means an incidental mention, which has no reason to include
+    one, doesn't count."""
+    text = '{"name": "read_file", "note": "the config mentions read_file settings"}'
+    assert mentions_tool_call_attempt(text, {"read_file"}) is False
