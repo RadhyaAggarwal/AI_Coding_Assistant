@@ -150,3 +150,34 @@ def test_looks_like_unparsed_tool_call_false_for_plain_prose():
 def test_looks_like_unparsed_tool_call_false_when_a_valid_call_is_present():
     text = '{"name": "read_file", "arguments": {"path": "a.py"}}'
     assert looks_like_unparsed_tool_call(text, {"read_file"}) is False
+
+
+def test_looks_like_unparsed_tool_call_false_for_valid_unrelated_json():
+    """Reproduces a real live regression: asked to summarize a YAML file,
+    the model answered by re-emitting its contents as a plain,
+    syntactically valid JSON object with no tool-call intent at all (no
+    name/tool/tool_name key) -- this must not be mistaken for a broken
+    tool-call attempt, or the loop nudges the model to "fix" JSON that
+    was never broken and was never a tool call to begin with."""
+    text = (
+        "```json\n"
+        "{\n"
+        '  "endpoint_url": "http://localhost:11434",\n'
+        '  "model_name": "qwen2.5-coder:7b"\n'
+        "}\n"
+        "```"
+    )
+    assert looks_like_unparsed_tool_call(text, {"read_file", "edit_file"}) is False
+
+
+def test_looks_like_unparsed_tool_call_false_when_broken_json_names_unknown_tool():
+    """Broken JSON that doesn't reference any tool the model was actually
+    offered is treated the same as a well-formed-but-unknown-name call
+    already is elsewhere in this module: not a call attempt worth
+    reacting to, since there's no way to tell it was ever meant to be
+    one."""
+    text = (
+        '{"name": "delete_everything", "arguments": {"path": "a.py", '
+        '"extra": "def f():\\n    """doc"""\\n"}}'
+    )
+    assert looks_like_unparsed_tool_call(text, {"edit_file"}) is False

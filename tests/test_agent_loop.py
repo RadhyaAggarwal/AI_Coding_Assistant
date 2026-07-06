@@ -557,3 +557,34 @@ def test_malformed_tool_call_attempt_is_not_returned_as_final_answer(tmp_path):
     nudge_message = model.calls[1][-1]
     assert nudge_message.role == "user"
     assert "didn't parse" in nudge_message.content
+
+
+class SummarizesAsPlainJsonModel(ModelInterface):
+    """Reproduces a real live regression: asked to summarize a file, the
+    model answers by re-emitting its contents as a plain, syntactically
+    valid JSON object -- not a tool call, just an oddly-formatted but
+    genuine answer with no tool-call intent at all."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        tool_messages = [m for m in messages if m.role == "tool"]
+        if len(tool_messages) == 0:
+            return ModelResponse(text=_call_text("read_file", {"path": "config.yaml"}))
+        return ModelResponse(
+            text='{"endpoint_url": "http://localhost:11434", "model_name": "x"}'
+        )
+
+
+def test_plain_json_answer_with_no_tool_call_intent_is_accepted(tmp_path):
+    (tmp_path / "config.yaml").write_text("model:\n  name: x\n", encoding="utf-8")
+    tools = ToolRegistry()
+    tools.register(ReadFileTool(tmp_path))
+    model = SummarizesAsPlainJsonModel()
+
+    answer = run("Summarize config.yaml", model, tools)
+
+    assert answer == '{"endpoint_url": "http://localhost:11434", "model_name": "x"}'
+    assert len(model.calls) == 2  # must not burn the whole step budget nudging forever

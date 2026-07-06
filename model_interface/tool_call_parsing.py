@@ -124,24 +124,46 @@ def extract_tool_call(text: str, known_tool_names: set[str]) -> ToolCall | None:
     return calls[0] if calls else None
 
 
-def looks_like_unparsed_tool_call(text: str, known_tool_names: set[str]) -> bool:
-    """True if text contains a brace-balanced {...} span that didn't
-    resolve into any valid call — evidence the model was attempting a
-    tool call and produced something malformed (e.g. an unescaped quote
-    from an embedded docstring breaking the JSON string it sits in), not
-    that it gave a genuine prose answer.
+_NAME_KEY_PATTERN = re.compile(
+    r'"(?:' + "|".join(_NAME_KEYS) + r')"\s*:\s*"([^"]*)"'
+)
 
-    Observed live: a model embedded a real docstring (with its own
-    unescaped quote characters) inside a JSON "replace" argument, making
-    the JSON invalid. extract_tool_calls() correctly discarded it (as it
-    should — this module doesn't guess at malformed JSON), but the caller
-    then had nothing to distinguish "no tool call was attempted" from
-    "one was attempted and broke," and the raw broken JSON got returned
-    to the user as if it were a final answer. This reuses the same
-    brace-depth scan _candidate_json_blobs() already does — if it found a
-    span at all, something was attempted, regardless of whether it went
-    on to parse.
+
+def looks_like_unparsed_tool_call(text: str, known_tool_names: set[str]) -> bool:
+    """True only for a {...} span that fails to parse as JSON at all but
+    still carries the literal signature of a tool-call attempt — a
+    "name"/"tool"/"tool_name" key naming one of the offered tools,
+    present in the raw text even though the surrounding JSON is broken.
+
+    Observed live (the case this exists for): a model embedded a real
+    docstring (with its own unescaped quote characters) inside a JSON
+    "replace" argument, making the JSON invalid. extract_tool_calls()
+    correctly discarded it, but the caller then had nothing to
+    distinguish "no tool call was attempted" from "one was attempted and
+    broke," and the raw broken JSON got returned to the user as if it
+    were a final answer.
+
+    An earlier version of this function treated *any* brace-balanced
+    span with zero resolved calls as evidence of a broken attempt. That
+    over-fired on a real, different live case: asked to summarize a YAML
+    file, the model answered by re-emitting its contents as a plain
+    (syntactically valid, unrelated-to-any-tool) JSON object — a
+    legitimate, if unhelpfully-formatted, answer with no tool-call intent
+    at all. Treating it as "broken JSON, please fix" sent the loop into
+    a nudge/retry cycle the model had no way to resolve, since there was
+    nothing to fix. Requiring the blob to both fail to parse *and* name
+    a real tool distinguishes an actual failed attempt from ordinary
+    prose that merely happens to contain balanced braces.
     """
     if extract_tool_calls(text, known_tool_names):
         return False
-    return bool(_candidate_json_blobs(text))
+    for blob in _candidate_json_blobs(text):
+        try:
+            json.loads(blob)
+            continue  # parsed fine -- just irrelevant JSON, not a broken attempt
+        except json.JSONDecodeError:
+            pass
+        match = _NAME_KEY_PATTERN.search(blob)
+        if match and match.group(1) in known_tool_names:
+            return True
+    return False
