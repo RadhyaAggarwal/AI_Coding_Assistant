@@ -12,9 +12,13 @@ def test_creates_new_file(tmp_path):
 
 
 def test_refuses_create_when_file_already_exists(tmp_path):
+    """The error must nudge toward read_file, not just refuse — this is
+    the exact live failure observed repeatedly: the model guesses
+    search="" against a file that already exists instead of reading it
+    first, and needs an actionable next step, not just a rejection."""
     (tmp_path / "existing.py").write_text("x = 1\n", encoding="utf-8")
     tool = EditFileTool(tmp_path)
-    with pytest.raises(EditFileError):
+    with pytest.raises(EditFileError, match="read_file"):
         tool.run(path="existing.py", search="", replace="y = 2\n")
 
 

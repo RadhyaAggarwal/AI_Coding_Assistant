@@ -39,7 +39,11 @@ class EditFileTool(Tool):
         "empty and put the full content in 'replace'. To edit an "
         "existing file, 'search' must be an exact substring that occurs "
         "exactly once in the file; it will be replaced with 'replace'. "
-        "Requires human confirmation before it runs."
+        "If you don't already know the file's exact current content, "
+        "call read_file on it first before editing it — an empty "
+        "'search' only works for creating a brand-new file, never for "
+        "changing one that already exists. Requires human confirmation "
+        "before it runs."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -84,7 +88,12 @@ class EditFileTool(Tool):
 
         current = resolved.read_text(encoding="utf-8")
         if search == "":
-            raise EditFileError(f"'{path}' already exists — provide a non-empty 'search' to edit it.")
+            raise EditFileError(
+                f"'{path}' already exists — an empty 'search' only creates "
+                "a new file. To edit it, call read_file on it first to get "
+                "its exact current content, then call again with a "
+                "non-empty 'search' substring from that content."
+            )
 
         occurrences = current.count(search)
         if occurrences == 0:
