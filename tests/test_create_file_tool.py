@@ -1,4 +1,4 @@
-from tools.create_file import CreateFileTool
+from tools.create_file import CreateFileError, CreateFileTool
 from tools.path_safety import PathOutsideProjectError
 
 import pytest
@@ -27,6 +27,29 @@ def test_replaces_existing_file_entirely(tmp_path):
     result = tool.run(path="existing.py", content="def bar():\n    return 2\n")
     assert (tmp_path / "existing.py").read_text(encoding="utf-8") == "def bar():\n    return 2\n"
     assert "Replaced" in result
+
+
+def test_refuses_content_that_would_break_python_syntax(tmp_path):
+    """Reproduces the exact live failure: a model double-escaped a
+    docstring's quotes when embedding Python into create_file's JSON
+    'content' argument (writing \\\" where \" was correct) -- valid JSON
+    either way, so this can only be caught by checking the decoded
+    result, which is what corrupted the real file live. Must be refused,
+    leaving any pre-existing file untouched."""
+    (tmp_path / "existing.py").write_text("original content\n", encoding="utf-8")
+    tool = CreateFileTool(tmp_path)
+    corrupted = 'def is_palindrome(text):\n    \\"\\"\\"doc\\"\\"\\"\n    return text\n'
+
+    with pytest.raises(CreateFileError, match="not valid"):
+        tool.run(path="existing.py", content=corrupted)
+
+    assert (tmp_path / "existing.py").read_text(encoding="utf-8") == "original content\n"
+
+
+def test_refuses_content_that_would_break_css_syntax(tmp_path):
+    tool = CreateFileTool(tmp_path)
+    with pytest.raises(CreateFileError, match="not valid"):
+        tool.run(path="style.css", content=".button { color: ")
 
 
 def test_blocks_path_traversal(tmp_path):

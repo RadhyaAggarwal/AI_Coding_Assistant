@@ -14,12 +14,24 @@ runs. Unlike them, the raw arguments alone don't make the consequences
 obvious when the target already exists — confirmation_message() warns
 explicitly that this discards the file's current content, rather than
 just echoing the call.
+
+Content is also checked with tools/syntax_check.py before being written
+(see that module for the live case that motivated it) — a whole-file
+write is exactly the shape most likely to embed a large, quote-heavy
+blob of source into a single JSON argument, so it's at least as exposed
+to the same escaping mistake as edit_file's smaller replacements.
 """
 from pathlib import Path
 from typing import Any
 
 from tools.base import Tool
 from tools.path_safety import resolve_within_root
+from tools.syntax_check import InvalidSyntaxError, check_syntax
+
+
+class CreateFileError(Exception):
+    """Raised when content can't be safely written -- e.g. it would leave
+    the file syntactically invalid in a language this project can check."""
 
 
 class CreateFileTool(Tool):
@@ -75,6 +87,12 @@ class CreateFileTool(Tool):
 
     def run(self, path: str, content: str) -> str:
         resolved = resolve_within_root(self._project_root, path)
+
+        try:
+            check_syntax(resolved, content)
+        except InvalidSyntaxError as exc:
+            raise CreateFileError(str(exc))
+
         existed = resolved.is_file()
         resolved.parent.mkdir(parents=True, exist_ok=True)
         resolved.write_text(content, encoding="utf-8")

@@ -54,6 +54,39 @@ def test_refuses_edit_when_target_missing(tmp_path):
         tool.run(path="missing.py", search="something", replace="else")
 
 
+def test_refuses_edit_that_would_break_python_syntax(tmp_path):
+    """Reproduces the earlier live failure (a middle-ground complex-task
+    test): replacing 'if value < max_val:' with a bare 'return ...'
+    orphaned the following indented line with no block header to justify
+    it -- a real IndentationError. Must be refused, leaving the file
+    untouched, rather than writing broken content."""
+    original = (
+        "def f(value, max_val):\n"
+        "    if value < max_val:\n"
+        "        value = max_val\n"
+        "    return value\n"
+    )
+    (tmp_path / "sample.py").write_text(original, encoding="utf-8")
+    tool = EditFileTool(tmp_path)
+
+    with pytest.raises(EditFileError, match="not valid"):
+        tool.run(
+            path="sample.py",
+            search="if value < max_val:",
+            replace="return value * 2",
+        )
+
+    assert (tmp_path / "sample.py").read_text(encoding="utf-8") == original
+
+
+def test_refuses_edit_that_would_break_javascript_syntax(tmp_path):
+    (tmp_path / "sample.js").write_text("function f() { return 1; }", encoding="utf-8")
+    tool = EditFileTool(tmp_path)
+
+    with pytest.raises(EditFileError, match="not valid"):
+        tool.run(path="sample.js", search="return 1;", replace="if (x")
+
+
 def test_blocks_path_traversal(tmp_path):
     tool = EditFileTool(tmp_path)
     with pytest.raises(PathOutsideProjectError):

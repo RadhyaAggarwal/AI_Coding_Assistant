@@ -28,12 +28,19 @@ content outside the exact substring it matched.
 Like run_command, this requires human confirmation before it runs —
 unlike read-only tools, its effect isn't fully contained by path
 validation alone.
+
+The resulting content is also checked with tools/syntax_check.py before
+being written (see that module for the live case that motivated it: a
+model double-escaping a docstring's quotes, valid JSON either way, but
+invalid Python once decoded). A bad edit is refused with the real parse
+error instead of corrupting the file.
 """
 from pathlib import Path
 from typing import Any
 
 from tools.base import Tool
 from tools.path_safety import resolve_within_root
+from tools.syntax_check import InvalidSyntaxError, check_syntax
 
 
 class EditFileError(Exception):
@@ -115,5 +122,11 @@ class EditFileTool(Tool):
                 "Include more surrounding context so it matches exactly once."
             )
 
-        resolved.write_text(current.replace(search, replace), encoding="utf-8")
+        new_content = current.replace(search, replace)
+        try:
+            check_syntax(resolved, new_content)
+        except InvalidSyntaxError as exc:
+            raise EditFileError(str(exc))
+
+        resolved.write_text(new_content, encoding="utf-8")
         return f"Edited {path}."
