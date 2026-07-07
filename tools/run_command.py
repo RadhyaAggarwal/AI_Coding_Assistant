@@ -7,7 +7,22 @@ sandboxing beyond that: the working directory is pinned to the project
 root, output is truncated, and a timeout is enforced, but a *confirmed*
 command can still do anything a human running it in this directory
 could do.
+
+Confirmation is this tool's real safety boundary, deliberately -- it
+doesn't refuse commands outright, since a human might genuinely want to
+run any of them. But that boundary only works if the human actually
+notices what they're approving. Observed live: a bigger, more capable
+model, given only "fix this bug and run the tests," went on unprompted
+to run `git add` and then `git push origin main` -- entirely outside
+the scope of what was asked. The push was correctly declined, but it
+was buried in a routine-looking confirmation prompt alongside several
+harmless ones, easy to approve on autopilot. confirmation_message()
+below makes a small, known set of especially consequential command
+shapes (pushing to a remote, discarding history/changes irreversibly,
+recursive force-deletes) impossible to miss, without blocking anything
+a human still chooses to approve.
 """
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -15,6 +30,42 @@ from typing import Any
 from tools.base import Tool
 
 _MAX_OUTPUT_CHARS = 4000
+
+_DANGEROUS_COMMAND_WARNINGS: list[tuple[re.Pattern, str]] = [
+    (
+        re.compile(r"\bgit\s+push\b", re.IGNORECASE),
+        "this pushes to a remote repository -- changes become visible to "
+        "others and are hard to fully undo",
+    ),
+    (
+        re.compile(r"\bgit\s+commit\b", re.IGNORECASE),
+        "this creates a permanent commit in git history",
+    ),
+    (
+        re.compile(r"\bgit\s+reset\s+--hard\b", re.IGNORECASE),
+        "this discards uncommitted local changes irreversibly",
+    ),
+    (
+        re.compile(r"\brm\s+(-\S*r\S*f\S*|-\S*f\S*r\S*|-[rf]\s+-[rf])\b", re.IGNORECASE),
+        "this recursively force-deletes files/directories -- not "
+        "recoverable via this project's snapshot system",
+    ),
+]
+
+
+def _looks_like_powershell_recurse_force_delete(command: str) -> bool:
+    lowered = command.lower()
+    return "remove-item" in lowered and "-recurse" in lowered and "-force" in lowered
+
+
+def _dangerous_command_warnings(command: str) -> list[str]:
+    warnings = [msg for pattern, msg in _DANGEROUS_COMMAND_WARNINGS if pattern.search(command)]
+    if _looks_like_powershell_recurse_force_delete(command):
+        warnings.append(
+            "this recursively force-deletes files/directories -- not "
+            "recoverable via this project's snapshot system"
+        )
+    return warnings
 
 
 class RunCommandTool(Tool):
@@ -40,6 +91,14 @@ class RunCommandTool(Tool):
     def __init__(self, project_root: str | Path, timeout_seconds: float = 60):
         self._project_root = Path(project_root).resolve()
         self._timeout_seconds = timeout_seconds
+
+    def confirmation_message(self, arguments: dict[str, Any]) -> str:
+        command = arguments.get("command", "")
+        warnings = _dangerous_command_warnings(command)
+        if not warnings:
+            return f"Agent wants to run 'run_command' with arguments {arguments}"
+        warning_lines = "\n".join(f"  WARNING: {w}" for w in warnings)
+        return f"Agent wants to run: {command}\n{warning_lines}"
 
     def run(self, command: str) -> str:
         try:
