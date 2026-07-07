@@ -28,7 +28,18 @@ rather than trusting the model to self-regulate:
   - Calling the exact same tool with the exact same arguments again
     (getting stuck in a loop) instead of using the observation it
     already has. Detected and refused rather than trusted to the
-    system prompt's "don't do that" instruction alone.
+    system prompt's "don't do that" instruction alone -- but only while
+    nothing has changed since the first call. A confirmation-gated tool
+    (edit_file/create_file/run_command) succeeding may have changed a
+    file, so every prior "already known" result is treated as possibly
+    stale from that point on, not permanently deduped. Observed live:
+    after a successful edit_file fix, the model correctly tried to
+    re-run the exact same run_command test command to verify it, and
+    was wrongly refused as "already called" every time, never learning
+    the fix had worked -- dedup assumed identical arguments always
+    means an identical result, true for a read-only lookup against
+    unchanged files, false for a command whose output depends on state
+    that just changed.
   - Answering a compound request without actually addressing every part
     of it — a model can produce a confident-sounding answer that's
     really a refusal, a guess, or drops a part it already investigated.
@@ -197,6 +208,25 @@ def run(
                 )
                 continue
 
+            if call.name in always_keep_names:
+                # A confirmation-gated tool just ran successfully --
+                # edit_file/create_file definitely may have changed a
+                # file, and run_command might have too. Observed live:
+                # after a successful edit_file fix, the model correctly
+                # tried to re-run the *same* run_command test command to
+                # verify it -- exactly the right thing to do -- and got
+                # refused as "already called," never seeing that the fix
+                # worked, because dedup assumed an identical call always
+                # gives an identical result. That's true for read-only
+                # lookups against unchanged files, not for a command
+                # whose output depends on file state that just changed.
+                # Clearing here means every prior "already known" result
+                # is treated as possibly stale from this point on, not
+                # just the specific file a tool happened to touch --
+                # deliberately conservative, since it's cheap (this set
+                # is small) and the alternative is silently blocking a
+                # legitimate fix-then-reverify cycle.
+                already_called.clear()
             already_called.add(_call_key(call))
             messages.append(Message(role="tool", content=cap_observation(observation)))
 

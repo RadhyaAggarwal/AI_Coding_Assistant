@@ -10,6 +10,7 @@ conversation is a proper role-separated history, not a flattened string.
 import json
 
 from model_interface.base import Message, ModelInterface, ModelResponse
+from tools.create_file import CreateFileTool
 from tools.edit_file import EditFileTool
 from tools.list_directory import ListDirectoryTool
 from tools.read_file import ReadFileTool
@@ -246,11 +247,61 @@ def test_refuses_identical_repeated_tool_call(tmp_path):
     assert "already called this exact tool" in third_call_messages[-1].content
 
 
+class RerunsVerificationAfterFixModel(ModelInterface):
+    """Reproduces the exact live failure: run a command, fix a bug via
+    edit_file, then try to re-run the *same* command to verify the fix.
+    That second call must actually re-execute, not get refused as
+    "already called" -- the file changed in between, so the dedup
+    guard's assumption (identical arguments always give an identical
+    result) no longer holds."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        tool_messages = [m for m in messages if m.role == "tool"]
+        if len(tool_messages) == 0:
+            return ModelResponse(
+                text=_call_text("run_command", {"command": "python -c \"print('checking')\""})
+            )
+        if len(tool_messages) == 1:
+            return ModelResponse(
+                text=_call_text("edit_file", {"path": "sample.py", "search": "return 1", "replace": "return 2"})
+            )
+        if len(tool_messages) == 2:
+            return ModelResponse(
+                text=_call_text("run_command", {"command": "python -c \"print('checking')\""})
+            )
+        return ModelResponse(text="Verified the fix.")
+
+
+def test_allows_rerunning_identical_command_after_a_successful_edit(tmp_path):
+    (tmp_path / "sample.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    tools = ToolRegistry(confirm=lambda description: True)
+    tools.register(RunCommandTool(tmp_path))
+    tools.register(EditFileTool(tmp_path))
+    model = RerunsVerificationAfterFixModel()
+
+    answer = run("Fix the bug in sample.py and verify it with a check", model, tools)
+
+    assert answer == "Verified the fix."
+    assert len(model.calls) == 4
+    # the second run_command call (after the edit) must have actually
+    # re-executed, not been refused as "already called"
+    final_tool_message = model.calls[3][-1]
+    assert final_tool_message.role == "tool"
+    assert "already called" not in final_tool_message.content
+    assert "checking" in final_tool_message.content
+
+
 class EditVerifyFixVerifyModel(ModelInterface):
-    """Simulates a realistic fix cycle: create a buggy file, verify by
-    reading it, fix it, verify again, then answer. 4 tool-call turns plus
-    a final answer turn — exercises the headroom _MAX_STEPS=6 was raised
-    to support (4 was only enough for a single tool call)."""
+    """Simulates a realistic fix cycle: create a buggy file (via
+    create_file, since edit_file no longer creates anything), verify by
+    reading it, fix it with a targeted edit_file call, verify again, then
+    answer. 4 tool-call turns plus a final answer turn — exercises the
+    headroom _MAX_STEPS=6 was raised to support (4 was only enough for a
+    single tool call)."""
 
     def __init__(self):
         self.calls: list[list[Message]] = []
@@ -261,8 +312,8 @@ class EditVerifyFixVerifyModel(ModelInterface):
         if step == 0:
             return ModelResponse(
                 text=_call_text(
-                    "edit_file",
-                    {"path": "calc.py", "search": "", "replace": "def add(a, b):\n    return a - b\n"},
+                    "create_file",
+                    {"path": "calc.py", "content": "def add(a, b):\n    return a - b\n"},
                 )
             )
         if step == 1:
@@ -280,8 +331,9 @@ class EditVerifyFixVerifyModel(ModelInterface):
 
 
 def test_completes_realistic_edit_verify_fix_cycle_within_budget(tmp_path):
-    tools = ToolRegistry(confirm=lambda description: True)  # edit_file requires confirmation
+    tools = ToolRegistry(confirm=lambda description: True)  # edit_file/create_file require confirmation
     tools.register(EditFileTool(tmp_path))
+    tools.register(CreateFileTool(tmp_path))
     tools.register(ReadFileTool(tmp_path))
     model = EditVerifyFixVerifyModel()
 
@@ -307,7 +359,7 @@ class RecordingToolsModel(ModelInterface):
 
 
 def test_tool_router_narrows_offered_tools_for_specific_query(tmp_path):
-    # Mirrors the real 10-tool registry (main.py's build_tool_registry) —
+    # Mirrors the real 11-tool registry (main.py's build_tool_registry) —
     # a 5-tool registry sharing generic "file"/"directory" vocabulary
     # across most descriptions doesn't leave enough room to demonstrate
     # narrowing; the structurally-distinct tools below don't share that
@@ -324,6 +376,7 @@ def test_tool_router_narrows_offered_tools_for_specific_query(tmp_path):
     tools.register(SearchCodeTool(tmp_path))
     tools.register(RunCommandTool(tmp_path))
     tools.register(EditFileTool(tmp_path))
+    tools.register(CreateFileTool(tmp_path))
     tools.register(RepoOverviewTool(tmp_path))
     tools.register(FindSymbolTool(tmp_path))
     tools.register(HtmlOverviewTool(tmp_path))
@@ -335,7 +388,7 @@ def test_tool_router_narrows_offered_tools_for_specific_query(tmp_path):
 
     offered = model.offered_tool_names[0]
     assert "list_directory" in offered
-    assert len(offered) < 10  # narrowed from the full 10 registered
+    assert len(offered) < 11  # narrowed from the full 11 registered
 
 
 class SkipsSecondPartThenCorrectsModel(ModelInterface):
