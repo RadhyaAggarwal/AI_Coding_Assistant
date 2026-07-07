@@ -4,22 +4,26 @@ from tools.edit_file import EditFileError, EditFileTool
 from tools.path_safety import PathOutsideProjectError
 
 
-def test_creates_new_file(tmp_path):
-    tool = EditFileTool(tmp_path)
-    result = tool.run(path="new.py", search="", replace="print('hi')\n")
-    assert (tmp_path / "new.py").read_text(encoding="utf-8") == "print('hi')\n"
-    assert "Created" in result
-
-
-def test_refuses_create_when_file_already_exists(tmp_path):
-    """The error must nudge toward read_file, not just refuse — this is
-    the exact live failure observed repeatedly: the model guesses
-    search="" against a file that already exists instead of reading it
-    first, and needs an actionable next step, not just a rejection."""
+def test_refuses_empty_search_on_existing_file(tmp_path):
+    """The error must redirect to create_file, not just refuse — this is
+    the exact live failure observed repeatedly: the model reaches for an
+    empty 'search' against a file that already exists, and needs an
+    actionable next step, not just a rejection. edit_file no longer has
+    any create/replace-whole-file mode at all, unlike its old behavior."""
     (tmp_path / "existing.py").write_text("x = 1\n", encoding="utf-8")
     tool = EditFileTool(tmp_path)
-    with pytest.raises(EditFileError, match="read_file"):
+    with pytest.raises(EditFileError, match="create_file"):
         tool.run(path="existing.py", search="", replace="y = 2\n")
+    assert (tmp_path / "existing.py").read_text(encoding="utf-8") == "x = 1\n"
+
+
+def test_refuses_empty_search_on_missing_file(tmp_path):
+    """edit_file never creates a file either, regardless of 'search' --
+    a missing target is refused before 'search' is even considered."""
+    tool = EditFileTool(tmp_path)
+    with pytest.raises(EditFileError, match="create_file"):
+        tool.run(path="new.py", search="", replace="print('hi')\n")
+    assert not (tmp_path / "new.py").exists()
 
 
 def test_edits_unique_match(tmp_path):
@@ -46,14 +50,14 @@ def test_refuses_ambiguous_match(tmp_path):
 
 def test_refuses_edit_when_target_missing(tmp_path):
     tool = EditFileTool(tmp_path)
-    with pytest.raises(EditFileError):
+    with pytest.raises(EditFileError, match="create_file"):
         tool.run(path="missing.py", search="something", replace="else")
 
 
 def test_blocks_path_traversal(tmp_path):
     tool = EditFileTool(tmp_path)
     with pytest.raises(PathOutsideProjectError):
-        tool.run(path="../escape.py", search="", replace="evil")
+        tool.run(path="../escape.py", search="x", replace="evil")
 
 
 def test_requires_confirmation_flag_set(tmp_path):
@@ -62,5 +66,5 @@ def test_requires_confirmation_flag_set(tmp_path):
 
 def test_target_path_resolves_within_root(tmp_path):
     tool = EditFileTool(tmp_path)
-    resolved = tool.target_path({"path": "sample.py", "search": "", "replace": ""})
+    resolved = tool.target_path({"path": "sample.py", "search": "x", "replace": "y"})
     assert resolved == (tmp_path / "sample.py").resolve()

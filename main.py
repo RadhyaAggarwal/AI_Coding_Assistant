@@ -14,6 +14,7 @@ from agent_controller.loop import run
 from config import load_config
 from model_interface.ollama_adapter import OllamaAdapter
 from state.snapshot import SnapshotManager
+from tools.create_file import CreateFileTool
 from tools.edit_file import EditFileTool
 from tools.find_callers import FindCallersTool
 from tools.find_importers import FindImportersTool
@@ -43,6 +44,7 @@ def build_tool_registry(
     registry.register(SearchCodeTool(project_root))
     registry.register(RunCommandTool(project_root, timeout_seconds=command_timeout_seconds))
     registry.register(EditFileTool(project_root))
+    registry.register(CreateFileTool(project_root))
     registry.register(RepoOverviewTool(project_root))
     registry.register(FindSymbolTool(project_root))
     registry.register(HtmlOverviewTool(project_root))

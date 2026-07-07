@@ -34,6 +34,16 @@ class Tool(ABC):
         """
         return None
 
+    def confirmation_message(self, arguments: dict[str, Any]) -> str:
+        """Human-facing description shown before a requires_confirmation
+        tool runs (see ToolRegistry.execute()). Defaults to a generic
+        description of the raw call; override when a tool's consequences
+        aren't obvious from its arguments alone (see tools/create_file.py
+        for an example: warns explicitly when a call would overwrite an
+        existing file's entire content, not just echo the raw arguments).
+        """
+        return f"Agent wants to run '{self.name}' with arguments {arguments}"
+
     def schema(self) -> dict[str, Any]:
         """JSON schema describing this tool, as sent to the model."""
         return {

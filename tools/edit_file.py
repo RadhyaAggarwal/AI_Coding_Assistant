@@ -1,20 +1,29 @@
-"""Search/replace file-editing tool — the only way agent logic writes to
-a file (CLAUDE.md: "Never write directly to a file from agent logic. All
-edits go through the patch / search-replace system, which validates
-before applying"). ToolRegistry snapshots the target path before run()
-executes (see Tool.target_path() and state/snapshot.py), so any edit
-this tool makes can be rolled back afterward.
+"""Search/replace file-editing tool — the only way agent logic makes a
+targeted change to an existing file (CLAUDE.md: "Never write directly to
+a file from agent logic. All edits go through the patch / search-replace
+system, which validates before applying"). ToolRegistry snapshots the
+target path before run() executes (see Tool.target_path() and
+state/snapshot.py), so any edit this tool makes can be rolled back
+afterward.
 
-Two modes:
-  - Create a new file: the target must not already exist, and 'search'
-    must be empty.
-  - Edit an existing file: 'search' must appear in the file's current
-    content exactly once. Zero matches means nothing to replace (a wrong
-    assumption about the file's content); more than one is ambiguous
-    about which occurrence was meant. Either is refused rather than
-    guessed at — the same safe pattern most search/replace edit tools
-    use, and what CLAUDE.md's "validates before applying" rule is
-    pointing at.
+Only edits an existing file: 'search' must be a non-empty exact
+substring of its current content, occurring exactly once. Zero matches
+means nothing to replace (a wrong assumption about the file's content);
+more than one is ambiguous about which occurrence was meant; empty is
+refused outright. Either is refused rather than guessed at — the same
+safe pattern most search/replace edit tools use, and what CLAUDE.md's
+"validates before applying" rule is pointing at.
+
+This tool used to also create new files (an empty 'search' meant
+"create"), but a model reached for that mode against files that already
+existed — writing only a partial replacement as 'replace' and silently
+discarding the rest of the file's content — three times live, twice
+*after* this tool's own description was made more explicit that empty
+search was create-only. See tools/create_file.py, which now owns whole-
+file creation/replacement as a separate, explicitly-named tool: choosing
+to replace an entire file is now a distinct tool choice, not a subtle
+argument value inside a tool that's otherwise incapable of discarding
+content outside the exact substring it matched.
 
 Like run_command, this requires human confirmation before it runs —
 unlike read-only tools, its effect isn't fully contained by path
@@ -34,16 +43,15 @@ class EditFileError(Exception):
 class EditFileTool(Tool):
     name = "edit_file"
     description = (
-        "Create a new file or make a search/replace edit to an existing "
-        "file inside the project. To create a new file, leave 'search' "
-        "empty and put the full content in 'replace'. To edit an "
-        "existing file, 'search' must be an exact substring that occurs "
-        "exactly once in the file; it will be replaced with 'replace'. "
-        "If you don't already know the file's exact current content, "
-        "call read_file on it first before editing it — an empty "
-        "'search' only works for creating a brand-new file, never for "
-        "changing one that already exists. Requires human confirmation "
-        "before it runs."
+        "Make a targeted search/replace edit to an EXISTING file. "
+        "'search' must be a non-empty, exact substring of the file's "
+        "current content that occurs exactly once; it will be replaced "
+        "with 'replace'. If you don't already know the file's exact "
+        "current content, call read_file on it first — guessing at "
+        "'search' is refused, not guessed at. To create a new file, or "
+        "to replace an existing file's entire content, use create_file "
+        "instead — this tool never does that. Requires human "
+        "confirmation before it runs."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -55,13 +63,13 @@ class EditFileTool(Tool):
             "search": {
                 "type": "string",
                 "description": (
-                    "Exact text to find and replace. Empty string means "
-                    "'create this file' (the file must not already exist)."
+                    "Exact, non-empty text to find and replace — a literal "
+                    "substring of the file's current content."
                 ),
             },
             "replace": {
                 "type": "string",
-                "description": "Replacement text (or full content, when creating a file).",
+                "description": "Replacement text for the matched 'search' substring.",
             },
         },
         "required": ["path", "search", "replace"],
@@ -78,23 +86,21 @@ class EditFileTool(Tool):
         resolved = resolve_within_root(self._project_root, path)
 
         if not resolved.is_file():
-            if search != "":
-                raise EditFileError(
-                    f"'{path}' doesn't exist yet — to create it, call again with search=''."
-                )
-            resolved.parent.mkdir(parents=True, exist_ok=True)
-            resolved.write_text(replace, encoding="utf-8")
-            return f"Created {path}."
-
-        current = resolved.read_text(encoding="utf-8")
-        if search == "":
             raise EditFileError(
-                f"'{path}' already exists — an empty 'search' only creates "
-                "a new file. To edit it, call read_file on it first to get "
-                "its exact current content, then call again with a "
-                "non-empty 'search' substring from that content."
+                f"'{path}' doesn't exist — edit_file only makes targeted "
+                "changes to existing files. To create it, call create_file "
+                "instead."
             )
 
+        if search == "":
+            raise EditFileError(
+                "'search' must not be empty — edit_file only makes targeted "
+                "changes to existing content and never discards the rest of "
+                "a file. To replace this file's entire content, call "
+                "create_file instead."
+            )
+
+        current = resolved.read_text(encoding="utf-8")
         occurrences = current.count(search)
         if occurrences == 0:
             raise EditFileError(

@@ -66,3 +66,35 @@ def test_confirmation_required_names_lists_only_confirmation_gated_tools():
     registry.register(_FakeSafeTool())
 
     assert registry.confirmation_required_names() == {"fake_risky"}
+
+
+class _FakeToolWithCustomConfirmationMessage(Tool):
+    name = "fake_custom"
+    description = "test tool"
+    parameters = {"type": "object", "properties": {}, "required": []}
+    requires_confirmation = True
+
+    def run(self, **kwargs):
+        return "done"
+
+    def confirmation_message(self, arguments):
+        return "this is a custom warning, not the generic one"
+
+
+def test_uses_a_tools_custom_confirmation_message():
+    """Tool.confirmation_message() exists specifically so a tool whose
+    consequences aren't obvious from raw arguments alone (see
+    tools/create_file.py) can override the generic wording -- the
+    registry must actually use it, not just build its own description."""
+    seen = []
+
+    def _record_and_confirm(description):
+        seen.append(description)
+        return True
+
+    registry = ToolRegistry(confirm=_record_and_confirm)
+    registry.register(_FakeToolWithCustomConfirmationMessage())
+
+    registry.execute("fake_custom", {})
+
+    assert seen == ["this is a custom warning, not the generic one"]

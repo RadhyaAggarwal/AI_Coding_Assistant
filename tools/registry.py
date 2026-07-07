@@ -43,7 +43,7 @@ class ToolRegistry:
         validate_arguments(tool.parameters, arguments)
 
         if tool.requires_confirmation:
-            description = f"Agent wants to run '{name}' with arguments {arguments}"
+            description = tool.confirmation_message(arguments)
             if not self._confirm(description):
                 raise ToolCallDeniedError(f"User declined to run '{name}' with {arguments}")
 

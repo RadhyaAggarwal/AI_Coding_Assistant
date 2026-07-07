@@ -6,12 +6,18 @@ API. See `CLAUDE.md` for architecture and module boundaries, and
 `AI-Coding Agent.pdf` / `Build_Plan_Addendum.pdf` for the full build plan.
 
 The agent understands a project's structure (Python/JavaScript/CSS/HTML
-symbol indexing via `ast` and tree-sitter), can search and read files,
-run shell commands, and make validated, snapshotted, human-confirmed
-edits — chaining multiple tool calls per request (e.g. edit a file, then
-run its tests to verify the fix actually works). Beyond file/symbol
-lookup (`find_symbol`, `repo_overview`, `html_overview`), it can also
-trace cross-file relationships — which files import a given module
+symbol indexing via `ast` and tree-sitter, cached to disk), can search
+and read files, run shell commands, and make validated, snapshotted,
+human-confirmed changes — chaining multiple tool calls per request (e.g.
+edit a file, then run its tests to verify the fix actually works). File
+changes are split into two explicit tools: `edit_file` makes a targeted
+search/replace change to part of an existing file, and `create_file`
+creates a new file or deliberately replaces one's entire content — kept
+separate so "replace everything" is always an explicit tool choice, not
+a subtle argument value inside an edit that's otherwise incapable of
+touching more than the exact text matched. Beyond file/symbol lookup
+(`find_symbol`, `repo_overview`, `html_overview`), it can also trace
+cross-file relationships — which files import a given module
 (`find_importers`) and where a function is actually called from
 (`find_callers`) — for questions that span more than one file. Not yet
 built: a self-correction loop beyond what fits in one request's step
