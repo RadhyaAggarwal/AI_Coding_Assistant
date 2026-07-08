@@ -24,6 +24,18 @@ model:
   # agent_controller/context_budget.py. 32768 matches qwen2.5-coder:7b.
   context_window_tokens: 32768
 
+  # Sampling temperature passed to Ollama (lower = more deterministic,
+  # favoring higher-probability tokens). Left unset, Ollama uses its own
+  # default (0.8), which is tuned for general-purpose/creative use, not
+  # precise tool-call JSON and code. A low value here doesn't cost any
+  # latency (it only changes how a token is sampled from the same
+  # already-computed distribution, not how much computation happens) and
+  # is expected to reduce exactly the kind of malformed-output and
+  # inconsistent-quality issues seen across live testing, since those
+  # are more likely at higher temperatures. Live-verified this value is
+  # accepted correctly by Ollama before relying on it.
+  temperature: 0.2
+
 project:
   # Root directory the agent is allowed to operate on. All tool file
   # access is validated against this path so the agent can't read or

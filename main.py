@@ -86,6 +86,7 @@ def main() -> None:
         endpoint_url=config["model"]["endpoint_url"],
         model_name=config["model"]["name"],
         request_timeout_seconds=config["model"]["request_timeout_seconds"],
+        temperature=config["model"].get("temperature"),
     )
     tools = build_tool_registry(
         config["project"]["root_path"],

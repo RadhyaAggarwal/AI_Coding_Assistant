@@ -20,10 +20,12 @@ class OllamaAdapter(ModelInterface):
         endpoint_url: str,
         model_name: str,
         request_timeout_seconds: float = 120,
+        temperature: float | None = None,
     ):
         self._endpoint_url = endpoint_url.rstrip("/")
         self._model_name = model_name
         self._timeout = request_timeout_seconds
+        self._temperature = temperature
 
     def generate(
         self,
@@ -37,6 +39,8 @@ class OllamaAdapter(ModelInterface):
         }
         if tools:
             payload["tools"] = tools
+        if self._temperature is not None:
+            payload["options"] = {"temperature": self._temperature}
 
         response = requests.post(
             f"{self._endpoint_url}/api/chat",
