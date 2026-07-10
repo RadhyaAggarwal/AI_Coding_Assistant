@@ -4,6 +4,7 @@ Usage:
     python main.py "Summarize config.yaml"
     python main.py                          # prompts for a request interactively
     python main.py --continue "keep going"  # resume the last conversation, fresh step budget
+    python main.py --sessions               # list recent past requests and their outcomes
     python main.py --history                # list recorded file-edit snapshots
     python main.py --rollback <snapshot_id>  # undo a specific edit
 """
@@ -13,6 +14,7 @@ from pathlib import Path
 
 from agent_controller.conversation_store import load_conversation, save_conversation
 from agent_controller.loop import is_incomplete_answer, run
+from agent_controller.session_log import append_session, read_sessions
 from config import load_config
 from model_interface.base import Message, ModelUnavailableError
 from model_interface.ollama_adapter import OllamaAdapter
@@ -25,6 +27,7 @@ from tools.find_symbol import FindSymbolTool
 from tools.html_overview import HtmlOverviewTool
 from tools.list_directory import ListDirectoryTool
 from tools.read_file import ReadFileTool
+from tools.recent_activity import RecentActivityTool
 from tools.registry import ToolRegistry
 from tools.repo_overview import RepoOverviewTool
 from tools.run_command import RunCommandTool
@@ -44,6 +47,7 @@ def build_tool_registry(
     project_root: str,
     command_timeout_seconds: float,
     snapshots: SnapshotManager,
+    state_dir: Path,
 ) -> ToolRegistry:
     registry = ToolRegistry(snapshots=snapshots)
     registry.register(ReadFileTool(project_root))
@@ -57,6 +61,7 @@ def build_tool_registry(
     registry.register(HtmlOverviewTool(project_root))
     registry.register(FindImportersTool(project_root))
     registry.register(FindCallersTool(project_root))
+    registry.register(RecentActivityTool(state_dir))
     return registry
 
 
@@ -78,6 +83,18 @@ def rollback(snapshots: SnapshotManager, snapshot_id: str) -> None:
         print(exc)
 
 
+def print_sessions(state_dir: Path) -> None:
+    entries = read_sessions(state_dir, limit=20)
+    if not entries:
+        print("No recorded sessions yet.")
+        return
+    for entry in entries:
+        when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(entry["timestamp"]))
+        status = "done" if entry["completed"] else "incomplete"
+        print(f"{when}  [{status}]  {entry['request']}")
+        print(f"    -> {entry['outcome']}")
+
+
 def main() -> None:
     config = load_config()
     snapshots = build_snapshot_manager(config)
@@ -88,6 +105,9 @@ def main() -> None:
         return
     if len(sys.argv) >= 3 and sys.argv[1] == "--rollback":
         rollback(snapshots, sys.argv[2])
+        return
+    if len(sys.argv) >= 2 and sys.argv[1] == "--sessions":
+        print_sessions(state_dir)
         return
 
     args = sys.argv[1:]
@@ -106,6 +126,7 @@ def main() -> None:
         config["project"]["root_path"],
         config["execution"]["command_timeout_seconds"],
         snapshots,
+        state_dir,
     )
 
     user_request = " ".join(args) or input("Request: ")
@@ -131,6 +152,7 @@ def main() -> None:
         return
 
     save_conversation(state_dir, transcript)
+    append_session(state_dir, user_request, answer, completed=not is_incomplete_answer(answer))
     print(answer)
     if is_incomplete_answer(answer):
         print("\n(Run again with --continue to keep going on this.)")
