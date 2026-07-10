@@ -44,6 +44,22 @@ class Tool(ABC):
         """
         return f"Agent wants to run '{self.name}' with arguments {arguments}"
 
+    def progress_message(self, arguments: dict[str, Any]) -> str:
+        """Human-facing one-liner printed right before every call to this
+        tool, confirmation-gated or not (see ToolRegistry.execute()).
+
+        Unlike confirmation_message(), this prints for read-only tools
+        too — those currently execute silently, so a multi-step run's
+        read_file/find_symbol/etc. calls are invisible in the transcript
+        even though they consume step budget. Observed live: a request
+        that made a correct fix (visible via its two confirmation-gated
+        edit_file/run_command calls) still ran out of step budget with no
+        way to tell what the other steps were doing. Override with a
+        natural-language description of the specific call (e.g. "Reading
+        {path}...") when the generic fallback below isn't clear enough.
+        """
+        return f"Running {self.name}..."
+
     def schema(self) -> dict[str, Any]:
         """JSON schema describing this tool, as sent to the model."""
         return {

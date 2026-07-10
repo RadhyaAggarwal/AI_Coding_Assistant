@@ -89,6 +89,9 @@ class EditFileTool(Tool):
     def target_path(self, arguments: dict[str, Any]) -> Path:
         return resolve_within_root(self._project_root, arguments["path"])
 
+    def progress_message(self, arguments: dict[str, Any]) -> str:
+        return f"Editing {arguments['path']}..."
+
     def run(self, path: str, search: str, replace: str) -> str:
         resolved = resolve_within_root(self._project_root, path)
 

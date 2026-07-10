@@ -67,6 +67,9 @@ class CreateFileTool(Tool):
     def target_path(self, arguments: dict[str, Any]) -> Path:
         return resolve_within_root(self._project_root, arguments["path"])
 
+    def progress_message(self, arguments: dict[str, Any]) -> str:
+        return f"Writing {arguments['path']}..."
+
     def confirmation_message(self, arguments: dict[str, Any]) -> str:
         path = arguments["path"]
         resolved = resolve_within_root(self._project_root, path)

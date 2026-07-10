@@ -19,3 +19,8 @@ def test_missing_file_raises(tmp_path):
     tool = ReadFileTool(tmp_path)
     with pytest.raises(FileNotFoundError):
         tool.run(path="missing.txt")
+
+
+def test_progress_message_names_the_file(tmp_path):
+    tool = ReadFileTool(tmp_path)
+    assert tool.progress_message({"path": "hello.txt"}) == "Reading hello.txt..."

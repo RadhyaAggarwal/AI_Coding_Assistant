@@ -39,6 +39,9 @@ class HtmlOverviewTool(Tool):
     def __init__(self, project_root: str | Path):
         self._project_root = Path(project_root).resolve()
 
+    def progress_message(self, arguments: dict[str, Any]) -> str:
+        return f"Getting an HTML overview of {arguments['path']}..."
+
     def run(self, path: str) -> str:
         resolved = resolve_within_root(self._project_root, path)
         if not resolved.is_file():

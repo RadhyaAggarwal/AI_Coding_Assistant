@@ -92,6 +92,9 @@ class RunCommandTool(Tool):
         self._project_root = Path(project_root).resolve()
         self._timeout_seconds = timeout_seconds
 
+    def progress_message(self, arguments: dict[str, Any]) -> str:
+        return f"Running command: {arguments.get('command', '')}"
+
     def confirmation_message(self, arguments: dict[str, Any]) -> str:
         command = arguments.get("command", "")
         warnings = _dangerous_command_warnings(command)

@@ -38,6 +38,9 @@ class FindCallersTool(Tool):
     def __init__(self, project_root: str | Path):
         self._project_root = Path(project_root).resolve()
 
+    def progress_message(self, arguments: dict[str, Any]) -> str:
+        return f"Finding callers of '{arguments['name']}'..."
+
     def run(self, name: str) -> str:
         index = RepoIndex(self._project_root)
         matches = index.find_callers(name)
