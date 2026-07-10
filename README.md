@@ -76,6 +76,12 @@ All model/endpoint/path settings live in `config.yaml` — nothing is
 hardcoded in application code. Edit that file to point at a different
 Ollama endpoint, model name, project root, or to adjust timeouts.
 
+## Sharing one model server across a team
+
+If several people want to share a single Ollama server on the same
+network instead of each installing Ollama and downloading the model
+individually, see `DEPLOYMENT.md`.
+
 ## Tests
 
 ```

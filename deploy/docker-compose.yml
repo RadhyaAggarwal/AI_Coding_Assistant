@@ -1,0 +1,57 @@
+# Runs Ollama as a persistent, self-healing service on the shared server
+# machine. See ../DEPLOYMENT.md for the full setup walkthrough (installing
+# Docker, GPU support, pulling a model, and configuring client machines to
+# point at this server).
+#
+# Start:   docker compose -f deploy/docker-compose.yml up -d
+# Logs:    docker compose -f deploy/docker-compose.yml logs -f
+# Stop:    docker compose -f deploy/docker-compose.yml down
+# Restart: docker compose -f deploy/docker-compose.yml restart
+
+services:
+  ollama:
+    image: ollama/ollama
+    container_name: ollama
+    # Always come back up after a crash, an unhealthy restart (see
+    # healthcheck below), or a server reboot -- without a human having to
+    # notice and intervene. "unless-stopped" means it won't restart only
+    # if someone explicitly runs `docker compose stop`.
+    restart: unless-stopped
+    ports:
+      # Left side is the port on the actual server machine, reachable by
+      # other machines on the LAN; right side is the port inside the
+      # container. Ollama's default API port is 11434 on both sides.
+      - "11434:11434"
+    volumes:
+      # Persists downloaded models (multiple GB) on the server's real
+      # disk, under Docker's own managed storage (named "ollama_data",
+      # declared below) -- without this, a model would have to be
+      # re-pulled from scratch every time the container is recreated.
+      - ollama_data:/root/.ollama
+    # Remove this "deploy" block entirely if the server has no GPU --
+    # Ollama falls back to CPU-only automatically, just slower (this is
+    # exactly the mode this project has been running in locally so far).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      # `ollama list` calls Ollama's own API internally, so it only
+      # succeeds if the server is actually responding -- not just that
+      # the process is technically still running. A short "timeout" is
+      # essential here: if Ollama gets stuck (the still-unresolved hang
+      # this project has hit before), this check would otherwise hang
+      # right along with it instead of ever reporting unhealthy. Combined
+      # with "restart: unless-stopped", enough consecutive failures make
+      # Docker kill and restart the container automatically.
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  ollama_data:
