@@ -8,6 +8,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+class ModelUnavailableError(Exception):
+    """Raised when a backend can't be reached or is unresponsive.
+
+    Distinct from a normal generation failure: a stuck backend process can
+    block a full-length request timeout on every call until a human
+    intervenes, so callers should surface this promptly instead of letting
+    each call hang for the full request timeout in turn.
+    """
+
+
 @dataclass
 class Message:
     """One turn in a chat-style conversation.

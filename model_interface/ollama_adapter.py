@@ -11,7 +11,13 @@ from typing import Any
 
 import requests
 
-from model_interface.base import Message, ModelInterface, ModelResponse, ToolCall
+from model_interface.base import (
+    Message,
+    ModelInterface,
+    ModelResponse,
+    ModelUnavailableError,
+    ToolCall,
+)
 
 
 class OllamaAdapter(ModelInterface):
@@ -21,17 +27,46 @@ class OllamaAdapter(ModelInterface):
         model_name: str,
         request_timeout_seconds: float = 120,
         temperature: float | None = None,
+        health_check_timeout_seconds: float = 5,
     ):
         self._endpoint_url = endpoint_url.rstrip("/")
         self._model_name = model_name
         self._timeout = request_timeout_seconds
         self._temperature = temperature
+        self._health_check_timeout = health_check_timeout_seconds
+
+    def _check_alive(self) -> None:
+        """Fail fast if Ollama isn't responding, rather than blocking a full
+        request_timeout_seconds on a call that may never come back.
+
+        A stuck Ollama process (observed live: still unresponsive 10+
+        minutes after a request was abandoned client-side) can silently
+        queue every subsequent request behind it. A lightweight endpoint
+        that doesn't touch the model itself (listing installed models,
+        rather than generating from one) should stay responsive even while
+        a generate call is stuck, letting this distinguish "slow" from
+        "unresponsive" in a few seconds instead of the full timeout.
+        """
+        try:
+            requests.get(
+                f"{self._endpoint_url}/api/tags",
+                timeout=self._health_check_timeout,
+            )
+        except requests.exceptions.RequestException as exc:
+            raise ModelUnavailableError(
+                f"Ollama at {self._endpoint_url} did not respond to a "
+                f"health check within {self._health_check_timeout}s. It "
+                f"looks unavailable or stuck on an earlier request -- "
+                f"try restarting the Ollama process before retrying."
+            ) from exc
 
     def generate(
         self,
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
     ) -> ModelResponse:
+        self._check_alive()
+
         payload: dict[str, Any] = {
             "model": self._model_name,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
@@ -42,11 +77,19 @@ class OllamaAdapter(ModelInterface):
         if self._temperature is not None:
             payload["options"] = {"temperature": self._temperature}
 
-        response = requests.post(
-            f"{self._endpoint_url}/api/chat",
-            json=payload,
-            timeout=self._timeout,
-        )
+        try:
+            response = requests.post(
+                f"{self._endpoint_url}/api/chat",
+                json=payload,
+                timeout=self._timeout,
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            raise ModelUnavailableError(
+                f"Ollama at {self._endpoint_url} did not respond within "
+                f"{self._timeout}s (passed its health check moments "
+                f"earlier, so it may have gotten stuck mid-request -- try "
+                f"restarting the Ollama process before retrying)."
+            ) from exc
         response.raise_for_status()
         data = response.json()
 

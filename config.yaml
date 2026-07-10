@@ -18,6 +18,14 @@ model:
   # tool schema list is sent (and must be processed) on every request.
   request_timeout_seconds: 240
 
+  # Timeout, in seconds, for a lightweight health check sent before every
+  # real request, to fail fast with a clear message if Ollama is stuck
+  # (e.g. still working through an earlier abandoned request) instead of
+  # silently blocking for the full request_timeout_seconds. Should stay
+  # short — this only needs to confirm Ollama's HTTP server is responsive,
+  # not that a generation call would succeed.
+  health_check_timeout_seconds: 5
+
   # The pulled model's actual context window, in tokens (check with
   # `ollama show <name>` if you change models). Used to budget how much
   # conversation history is sent per request — see
