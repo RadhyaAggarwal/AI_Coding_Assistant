@@ -3,6 +3,7 @@
 Usage:
     python main.py "Summarize config.yaml"
     python main.py                          # prompts for a request interactively
+    python main.py --continue "keep going"  # resume the last conversation, fresh step budget
     python main.py --history                # list recorded file-edit snapshots
     python main.py --rollback <snapshot_id>  # undo a specific edit
 """
@@ -10,8 +11,10 @@ import sys
 import time
 from pathlib import Path
 
-from agent_controller.loop import run
+from agent_controller.conversation_store import load_conversation, save_conversation
+from agent_controller.loop import is_incomplete_answer, run
 from config import load_config
+from model_interface.base import Message, ModelUnavailableError
 from model_interface.ollama_adapter import OllamaAdapter
 from state.snapshot import SnapshotManager
 from tools.create_file import CreateFileTool
@@ -28,9 +31,13 @@ from tools.run_command import RunCommandTool
 from tools.search_code import SearchCodeTool
 
 
-def build_snapshot_manager(config: dict) -> SnapshotManager:
+def _state_dir(config: dict) -> Path:
     project_root = Path(config["project"]["root_path"]).resolve()
-    return SnapshotManager(project_root / config["state"]["snapshot_dir"])
+    return project_root / config["state"]["snapshot_dir"]
+
+
+def build_snapshot_manager(config: dict) -> SnapshotManager:
+    return SnapshotManager(_state_dir(config))
 
 
 def build_tool_registry(
@@ -74,6 +81,7 @@ def rollback(snapshots: SnapshotManager, snapshot_id: str) -> None:
 def main() -> None:
     config = load_config()
     snapshots = build_snapshot_manager(config)
+    state_dir = _state_dir(config)
 
     if len(sys.argv) >= 2 and sys.argv[1] == "--history":
         print_history(snapshots)
@@ -82,11 +90,17 @@ def main() -> None:
         rollback(snapshots, sys.argv[2])
         return
 
+    args = sys.argv[1:]
+    continue_previous = bool(args) and args[0] == "--continue"
+    if continue_previous:
+        args = args[1:]
+
     model = OllamaAdapter(
         endpoint_url=config["model"]["endpoint_url"],
         model_name=config["model"]["name"],
         request_timeout_seconds=config["model"]["request_timeout_seconds"],
         temperature=config["model"].get("temperature"),
+        health_check_timeout_seconds=config["model"].get("health_check_timeout_seconds", 5),
     )
     tools = build_tool_registry(
         config["project"]["root_path"],
@@ -94,9 +108,32 @@ def main() -> None:
         snapshots,
     )
 
-    user_request = " ".join(sys.argv[1:]) or input("Request: ")
-    answer = run(user_request, model, tools, config["model"]["context_window_tokens"])
+    user_request = " ".join(args) or input("Request: ")
+
+    transcript: list[Message] = []
+    if continue_previous:
+        previous = load_conversation(state_dir)
+        if previous is None:
+            print("No previous conversation to continue -- starting fresh.")
+        else:
+            transcript = previous
+
+    try:
+        answer = run(
+            user_request,
+            model,
+            tools,
+            config["model"]["context_window_tokens"],
+            transcript=transcript,
+        )
+    except ModelUnavailableError as exc:
+        print(f"Model unavailable: {exc}")
+        return
+
+    save_conversation(state_dir, transcript)
     print(answer)
+    if is_incomplete_answer(answer):
+        print("\n(Run again with --continue to keep going on this.)")
 
 
 if __name__ == "__main__":

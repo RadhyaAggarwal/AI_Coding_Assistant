@@ -10,7 +10,7 @@ straightforward instead of a rewrite.
 
 Local models are unreliable in ways that matter a lot more once a loop
 can run several steps (Build Plan Addendum 2.2: "degrading plan quality
-over long ReAct loops"), so this loop defends against six failure modes
+over long ReAct loops"), so this loop defends against seven failure modes
 rather than trusting the model to self-regulate:
   - Not using the backend's structured tool-calling field at all, just
     writing the JSON as plain text. _resolve_tool_calls() recovers that.
@@ -64,6 +64,19 @@ rather than trusting the model to self-regulate:
     check requiring only one signal or the other. A detected attempt gets
     fed back as a nudge to fix the JSON instead of being handed to the
     user.
+  - A turn where every call turns out to be a duplicate (see above)
+    silently ate a step, giving the model no new information to work
+    with. Observed live: a request that made a correct, verified fix
+    still failed with "could not complete within 6 steps" -- progress
+    messages (see tools/base.py's Tool.progress_message()) added to
+    trace this showed only 3 real tool calls executed despite 6 steps
+    elapsing, implying the rest were rejected repeats. A duplicate-only
+    turn no longer consumes the primary _MAX_STEPS budget, so the model
+    gets a genuine shot at answering instead of losing budget to its own
+    already-rejected repeats -- but it's bounded by its own small
+    _MAX_WASTED_STEPS budget, not exempted outright, so a model that's
+    truly stuck repeating itself forever still fails safely rather than
+    running unbounded.
 A hard step budget bounds all of the above combined, so a model that
 never converges can't run forever.
 """
@@ -87,6 +100,18 @@ _DEFAULT_CONTEXT_WINDOW_TOKENS = 8192
 # machine's CPU-only inference, so this is a real latency tradeoff, not a
 # free increase — raise further only if a realistic task still runs out.
 _MAX_STEPS = 6
+# Observed live: a request that made a correct fix, verified via two real
+# tool calls, still exhausted the whole step budget -- the progress
+# messages added to trace this showed only 3 unique tool calls ran despite
+# 6 steps elapsing, implying the rest were the model re-issuing calls it
+# had already made (silently rejected by the already_called dedup guard
+# below) instead of answering. A turn where *every* call turns out to be
+# a duplicate makes no real progress, so it doesn't consume the primary
+# step budget -- but it's capped by its own small budget rather than
+# exempted outright, so a model that's genuinely stuck repeating itself
+# forever still fails safely instead of running unbounded (the whole
+# reason _MAX_STEPS exists in the first place).
+_MAX_WASTED_STEPS = 3
 # Observed live: a model can plan several tool calls in a single turn (a
 # JSON array covering both parts of a compound request) — a real plan,
 # not garbage, and worth executing in full within that one step (see
@@ -95,6 +120,20 @@ _MAX_STEPS = 6
 # the rest of this loop, in case a bad turn ever lists an implausible
 # number of calls.
 _MAX_CALLS_PER_TURN = 4
+# Shared prefix for both give-up messages (step budget exhausted, or
+# stuck repeating itself) -- a single source of truth so a caller (see
+# is_incomplete_answer() and main.py's --continue hint) can recognize an
+# incomplete answer without duplicating the exact wording.
+_INCOMPLETE_ANSWER_PREFIX = "Could not complete the request"
+
+
+def is_incomplete_answer(answer: str) -> bool:
+    """True if answer is one of run()'s own give-up messages, rather than
+    a genuine (if possibly partial) response the model produced. Callers
+    can use this to suggest --continue without needing to know run()'s
+    exact wording.
+    """
+    return answer.startswith(_INCOMPLETE_ANSWER_PREFIX)
 
 
 def _load_system_prompt() -> str:
@@ -121,22 +160,47 @@ def _call_key(call: ToolCall) -> tuple[str, str]:
     return (call.name, json.dumps(call.arguments, sort_keys=True))
 
 
+def _sync_transcript(transcript: list[Message] | None, messages: list[Message]) -> None:
+    if transcript is not None:
+        transcript[:] = messages
+
+
 def run(
     user_request: str,
     model: ModelInterface,
     tools: ToolRegistry,
     context_window_tokens: int = _DEFAULT_CONTEXT_WINDOW_TOKENS,
+    transcript: list[Message] | None = None,
 ) -> str:
-    messages = [
-        Message(role="system", content=_load_system_prompt()),
-        Message(role="user", content=user_request),
-    ]
+    """Run one request through the agent loop and return its final answer.
+
+    transcript, if given, serves double duty: on the way in, a non-empty
+    list is treated as prior conversation history to continue from (a new
+    user turn for user_request is appended after it) rather than starting
+    a fresh system+user exchange; on the way out, it's mutated in place
+    to hold the complete, untrimmed conversation (including the final
+    answer), so a caller can persist it and pass it back in on a later
+    call to continue where this one left off. Deliberately full-fidelity,
+    not summarized -- see agent_controller/conversation_store.py for the
+    persistence side of this and why summarizing was rejected here the
+    same way it was for context_budget.py.
+    """
+    if transcript:
+        messages = list(transcript) + [Message(role="user", content=user_request)]
+    else:
+        messages = [
+            Message(role="system", content=_load_system_prompt()),
+            Message(role="user", content=user_request),
+        ]
     known_tool_names = {schema["function"]["name"] for schema in tools.schemas()}
     always_keep_names = frozenset(tools.confirmation_required_names())
     already_called: set[tuple[str, str]] = set()
     coverage_nudge_used = False
+    real_steps_used = 0
+    wasted_steps_used = 0
+    gave_up_on_repetition = False
 
-    for _ in range(_MAX_STEPS):
+    while real_steps_used < _MAX_STEPS and wasted_steps_used < _MAX_WASTED_STEPS:
         sendable = trim_to_budget(messages, context_window_tokens)
         query_text = " ".join(m.content for m in sendable if m.role != "system")
         offered_tools = route_tools(query_text, tools.schemas(), always_keep_names=always_keep_names)
@@ -144,6 +208,7 @@ def run(
         calls = _resolve_tool_calls(response, known_tool_names)
 
         if not calls:
+            real_steps_used += 1
             if mentions_tool_call_attempt(response.text, known_tool_names):
                 messages.append(Message(role="assistant", content=response.text))
                 messages.append(
@@ -177,14 +242,21 @@ def run(
                         )
                     )
                     continue
+            messages.append(Message(role="assistant", content=response.text))
+            _sync_transcript(transcript, messages)
             return response.text
 
         messages.append(
             Message(role="assistant", content=_assistant_turn_content(response, calls))
         )
 
+        made_progress = False
         for call in calls:
             if _call_key(call) in already_called:
+                tools.report(
+                    f"Skipping duplicate call to '{call.name}' -- already ran "
+                    "with these exact arguments."
+                )
                 messages.append(
                     Message(
                         role="tool",
@@ -197,6 +269,7 @@ def run(
                 )
                 continue
 
+            made_progress = True
             try:
                 observation = tools.execute(call.name, call.arguments)
             except Exception as exc:
@@ -230,15 +303,60 @@ def run(
             already_called.add(_call_key(call))
             messages.append(Message(role="tool", content=cap_observation(observation)))
 
-    # Step budget exhausted. Ask once more, without tool access, so the
-    # model synthesizes an answer from whatever it gathered rather than
-    # the loop just giving up with nothing. If it still tries to call a
-    # tool anyway (native structured call, or the same name+arguments
-    # signature mentions_tool_call_attempt() checks for elsewhere), don't
-    # leak that raw attempt to the user as if it were a real answer --
-    # unlike the per-step branch there's no budget left to nudge a retry,
-    # so this is a hard stop rather than another chance.
+        if made_progress:
+            real_steps_used += 1
+        else:
+            # Every call this turn was a duplicate -- no new information
+            # reached the model, so this didn't consume the primary
+            # budget. Still bounded by _MAX_WASTED_STEPS, so a model
+            # that's genuinely stuck repeating itself forever still stops
+            # instead of running unbounded.
+            wasted_steps_used += 1
+            if wasted_steps_used >= _MAX_WASTED_STEPS:
+                gave_up_on_repetition = True
+
+    # Step budget exhausted (either the real one, or the smaller one
+    # reserved for duplicate-only turns). Ask once more, without tool
+    # access, so the model synthesizes an answer from whatever it
+    # gathered rather than the loop just giving up with nothing. If it
+    # still tries to call a tool anyway (native structured call, or the
+    # same name+arguments signature mentions_tool_call_attempt() checks
+    # for elsewhere), it hasn't registered that it's out of tools -- give
+    # it exactly one more turn with an explicit instruction to stop
+    # trying and describe its partial progress in plain language instead
+    # (the same trusted mechanism a normal successful answer already
+    # uses, just pointed at "explain what you have" instead of "answer
+    # the question" -- not a new, less-reliable summarization path).
+    # Only if it *still* can't produce real prose after being told
+    # directly is this a genuine, unrecoverable give-up.
     final_response = model.generate(trim_to_budget(messages, context_window_tokens))
     if final_response.tool_calls or mentions_tool_call_attempt(final_response.text, known_tool_names):
-        return f"Could not complete the request within {_MAX_STEPS} steps."
+        messages.append(Message(role="assistant", content=final_response.text))
+        messages.append(
+            Message(
+                role="user",
+                content=(
+                    "No more tools are available for this request -- don't "
+                    "attempt another tool call, it won't run. In a few "
+                    "plain-language sentences, explain what you were able "
+                    "to find out so far, how it relates to what was asked, "
+                    "and what's still unanswered."
+                ),
+            )
+        )
+        final_response = model.generate(trim_to_budget(messages, context_window_tokens))
+        if final_response.tool_calls or mentions_tool_call_attempt(final_response.text, known_tool_names):
+            if gave_up_on_repetition:
+                final_text = (
+                    f"{_INCOMPLETE_ANSWER_PREFIX} -- kept repeating "
+                    "already-answered tool calls without making progress."
+                )
+            else:
+                final_text = f"{_INCOMPLETE_ANSWER_PREFIX} within {_MAX_STEPS} steps."
+            messages.append(Message(role="assistant", content=final_text))
+            _sync_transcript(transcript, messages)
+            return final_text
+
+    messages.append(Message(role="assistant", content=final_response.text))
+    _sync_transcript(transcript, messages)
     return final_response.text

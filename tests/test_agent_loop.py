@@ -18,7 +18,7 @@ from tools.registry import ToolRegistry
 from tools.run_command import RunCommandTool
 from tools.search_code import SearchCodeTool
 
-from agent_controller.loop import _MAX_CALLS_PER_TURN, _MAX_STEPS, run
+from agent_controller.loop import _MAX_CALLS_PER_TURN, _MAX_STEPS, _MAX_WASTED_STEPS, is_incomplete_answer, run
 
 
 def _call_text(name: str, arguments: dict) -> str:
@@ -167,6 +167,24 @@ class AlwaysInvalidModel(ModelInterface):
         return ModelResponse(text='{"name": "read_file", "arguments": {}}')
 
 
+class RecoversWithPlainLanguageAfterNudgeModel(ModelInterface):
+    """Behaves exactly like AlwaysInvalidModel through the whole step
+    budget and the first final-synthesis attempt (still reaching for a
+    tool out of habit even though none are offered) -- but responds with
+    a real plain-language partial summary once told explicitly that no
+    tools are available. Verifies the explicit nudge actually recovers a
+    usable answer instead of the loop giving up with a generic message."""
+
+    def __init__(self):
+        self.call_count = 0
+
+    def generate(self, messages, tools=None):
+        self.call_count += 1
+        if self.call_count <= _MAX_STEPS + 1:
+            return ModelResponse(text='{"name": "read_file", "arguments": {}}')
+        return ModelResponse(text="Here's what I found so far: nothing conclusive yet.")
+
+
 def test_gives_up_after_max_steps(tmp_path):
     tools = ToolRegistry()
     tools.register(ReadFileTool(tmp_path))
@@ -175,9 +193,82 @@ def test_gives_up_after_max_steps(tmp_path):
     answer = run("Summarize sample.txt", model, tools)
 
     assert f"within {_MAX_STEPS} steps" in answer
-    # _MAX_STEPS failed attempts, plus one final no-tools synthesis call
-    # that also fails to produce a clean answer (guarded, not leaked raw)
-    assert model.call_count == _MAX_STEPS + 1
+    assert is_incomplete_answer(answer)
+    # _MAX_STEPS failed attempts, plus the final no-tools synthesis call,
+    # plus one more explicit nudge to stop trying tools and summarize --
+    # both still fail to produce a clean answer (guarded, not leaked raw)
+    assert model.call_count == _MAX_STEPS + 2
+
+
+def test_recovers_with_plain_language_summary_after_explicit_nudge(tmp_path):
+    tools = ToolRegistry()
+    tools.register(ReadFileTool(tmp_path))
+    model = RecoversWithPlainLanguageAfterNudgeModel()
+
+    answer = run("Summarize sample.txt", model, tools)
+
+    assert answer == "Here's what I found so far: nothing conclusive yet."
+    assert not is_incomplete_answer(answer)
+    # _MAX_STEPS failed attempts + the first final synthesis attempt
+    # (still broken) + the one explicit nudge, which succeeds this time.
+    assert model.call_count == _MAX_STEPS + 2
+
+
+class ImmediateAnswerModel(ModelInterface):
+    """Answers directly in plain text on the first call, no tool use --
+    used to isolate transcript behavior from tool-call mechanics."""
+
+    def __init__(self, answer_text="ANSWER"):
+        self.calls: list[list[Message]] = []
+        self._answer_text = answer_text
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        return ModelResponse(text=self._answer_text)
+
+
+def test_transcript_empty_list_behaves_like_a_fresh_conversation(tmp_path):
+    tools = ToolRegistry()
+    model = ImmediateAnswerModel("ANSWER")
+    transcript: list[Message] = []
+
+    answer = run("Summarize sample.txt", model, tools, transcript=transcript)
+
+    assert answer == "ANSWER"
+    first_call_messages = model.calls[0]
+    assert [m.role for m in first_call_messages] == ["system", "user"]
+    # after the call, transcript should hold the full conversation,
+    # including the final answer recorded as an assistant turn -- ready
+    # to be saved and passed back in on a later --continue call.
+    assert [m.role for m in transcript] == ["system", "user", "assistant"]
+    assert transcript[-1].content == "ANSWER"
+
+
+def test_transcript_with_prior_history_is_used_as_the_starting_point(tmp_path):
+    """Reproduces what --continue is meant to do: a saved conversation
+    from an earlier call gets used as real starting context, not
+    discarded in favor of a fresh system+user exchange."""
+    tools = ToolRegistry()
+    model = ImmediateAnswerModel("SECOND ANSWER")
+    prior = [
+        Message(role="system", content="SYS PROMPT"),
+        Message(role="user", content="first question"),
+        Message(role="assistant", content="first answer"),
+    ]
+    transcript = list(prior)
+
+    answer = run("second question", model, tools, transcript=transcript)
+
+    assert answer == "SECOND ANSWER"
+    first_call_messages = model.calls[0]
+    # the prior history is sent as-is, with the new user turn appended
+    # after it -- not replaced by a fresh system+user pair.
+    assert [m.content for m in first_call_messages] == [
+        "SYS PROMPT", "first question", "first answer", "second question",
+    ]
+    assert [m.content for m in transcript] == [
+        "SYS PROMPT", "first question", "first answer", "second question", "SECOND ANSWER",
+    ]
 
 
 class MultiStepModel(ModelInterface):
@@ -245,6 +336,92 @@ def test_refuses_identical_repeated_tool_call(tmp_path):
     third_call_messages = model.calls[2]
     assert third_call_messages[-1].role == "tool"
     assert "already called this exact tool" in third_call_messages[-1].content
+
+
+class InterleavedDuplicatesModel(ModelInterface):
+    """5 distinct real read_file calls, interleaved with 2 duplicate
+    repeats of the very first one, then a final text answer -- 8 total
+    generate() calls. Reproduces the live failure that motivated exempting
+    duplicate-only turns from the primary step budget: a request that did
+    real, correct work still failed with "could not complete within 6
+    steps" because repeated (rejected) calls counted against the budget
+    just like real ones did."""
+
+    _SEQUENCE = ["a.txt", "a.txt", "b.txt", "a.txt", "c.txt", "d.txt", "e.txt"]
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+        self._step = 0
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        if self._step < len(self._SEQUENCE):
+            path = self._SEQUENCE[self._step]
+            self._step += 1
+            return ModelResponse(text=_call_text("read_file", {"path": path}))
+        return ModelResponse(text="FINAL ANSWER AFTER DUPLICATES")
+
+
+def test_duplicate_only_turns_dont_consume_the_real_step_budget(tmp_path):
+    for name in ("a", "b", "c", "d", "e"):
+        (tmp_path / f"{name}.txt").write_text(f"{name} contents", encoding="utf-8")
+    tools = ToolRegistry()
+    tools.register(ReadFileTool(tmp_path))
+    model = InterleavedDuplicatesModel()
+
+    answer = run("Investigate the project's files", model, tools)
+
+    # 5 real reads (a, b, c, d, e) + 2 duplicate-only turns (both repeats
+    # of a.txt) + 1 final text answer = 8 generate() calls -- more than
+    # _MAX_STEPS (6), which would have failed before this change since
+    # every for-loop iteration consumed the budget regardless of whether
+    # it was a genuine duplicate rejection.
+    assert answer == "FINAL ANSWER AFTER DUPLICATES"
+    assert len(model.calls) == 8
+
+
+class ForeverRepeatsCallModel(ModelInterface):
+    """Never produces anything new -- always attempts the exact same
+    read_file call, even after being told (via the dedup tool message)
+    that it's a repeat. Verifies the loop still fails safely, bounded by
+    _MAX_WASTED_STEPS, instead of running unbounded now that
+    duplicate-only turns no longer consume the primary step budget."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        return ModelResponse(text=_call_text("read_file", {"path": "sample.txt"}))
+
+
+def test_gives_up_when_stuck_repeating_the_same_call(tmp_path):
+    (tmp_path / "sample.txt").write_text("sample contents", encoding="utf-8")
+    tools = ToolRegistry()
+    tools.register(ReadFileTool(tmp_path))
+    model = ForeverRepeatsCallModel()
+
+    answer = run("Investigate sample.txt", model, tools)
+
+    assert "kept repeating" in answer
+    assert is_incomplete_answer(answer)
+    # 1 genuine first call + _MAX_WASTED_STEPS duplicate-only turns before
+    # giving up, plus the final no-tools synthesis attempt, plus one more
+    # explicit nudge to stop trying tools and summarize instead -- both
+    # still fail to produce a clean answer here.
+    assert len(model.calls) == 1 + _MAX_WASTED_STEPS + 2
+
+
+def test_reports_when_skipping_a_duplicate_call(tmp_path):
+    (tmp_path / "sample.txt").write_text("sample contents", encoding="utf-8")
+    reported = []
+    tools = ToolRegistry(report=reported.append)
+    tools.register(ReadFileTool(tmp_path))
+    model = RepeatsCallModel()
+
+    run("Summarize sample.txt", model, tools)
+
+    assert any("duplicate" in message.lower() for message in reported)
 
 
 class RerunsVerificationAfterFixModel(ModelInterface):

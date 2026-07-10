@@ -71,3 +71,36 @@ def test_trim_to_budget_never_orphans_a_tool_message():
     for i, role in enumerate(roles):
         if role == "tool":
             assert roles[i - 1] == "assistant"
+
+
+def test_trim_to_budget_handles_a_continuations_mid_history_user_turn():
+    """A --continue follow-up seeds run() with an *extended* conversation
+    containing an earlier request's own "user" turn partway through, not
+    just at the start -- a shape the original (assistant, tool)*-only
+    pairing assumption didn't anticipate. This reproduces that shape
+    directly (not via the full loop) to isolate the trimming logic."""
+    chunk = "x" * 400
+    messages = [
+        Message(role="system", content="sys"),
+        Message(role="user", content="first request"),
+        Message(role="assistant", content=f"call 0: {chunk}"),
+        Message(role="tool", content=f"result 0: {chunk}"),
+        Message(role="assistant", content="first answer"),
+        Message(role="user", content="second request (a --continue follow-up)"),
+        Message(role="assistant", content=f"call 1: {chunk}"),
+        Message(role="tool", content=f"result 1: {chunk}"),
+    ]
+
+    result = trim_to_budget(messages, context_window_tokens=1250)
+
+    roles = [m.role for m in result]
+    for i, role in enumerate(roles):
+        if role == "tool":
+            assert roles[i - 1] == "assistant"
+    # the newest turn -- the --continue follow-up and what it actually
+    # asked for -- must survive; it's what's currently being worked on
+    assert result[-2].content.startswith("call 1:")
+    assert result[-1].content.startswith("result 1:")
+    assert any(
+        m.content == "second request (a --continue follow-up)" for m in result
+    )
