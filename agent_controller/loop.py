@@ -39,7 +39,14 @@ rather than trusting the model to self-regulate:
     the fix had worked -- dedup assumed identical arguments always
     means an identical result, true for a read-only lookup against
     unchanged files, false for a command whose output depends on state
-    that just changed.
+    that just changed. Dedup also fires on an identical call that
+    *fails*, not just one that succeeds -- a call is recorded as
+    already-tried either way. Without this, a call that fails the same
+    way every time (e.g. an edit whose result would be invalid syntax)
+    was invisible to dedup, since only successes used to get recorded --
+    observed live, a model retried one syntactically-broken edit_file
+    call across a full 6-step budget, each attempt burning real budget
+    because none had ever succeeded and so none were ever remembered.
   - Answering a compound request without actually addressing every part
     of it — a model can produce a confident-sounding answer that's
     really a refusal, a guess, or drops a part it already investigated.
@@ -125,6 +132,23 @@ _MAX_CALLS_PER_TURN = 4
 # is_incomplete_answer() and main.py's --continue hint) can recognize an
 # incomplete answer without duplicating the exact wording.
 _INCOMPLETE_ANSWER_PREFIX = "Could not complete the request"
+# Measured live (agent_controller/tool_router.py's keyword scoring):
+# list_directory scores 0 against a vague, filename-blind bug report --
+# its name ("list"+"directory") shares no vocabulary with task-oriented
+# words like "bug"/"fix"/"receipt", so it gets narrowed out on every step
+# by design, not by mistake. That's the right tradeoff most of the time,
+# but costly on exactly the step it matters most: the very first one,
+# when nothing is known yet and a directory listing is the cheapest
+# possible lead (real filenames like "scratch_receipt.py" are a stronger
+# signal than any guessed search term). Force-including these two
+# "orientation" tools only on that first step -- not every step, which
+# would erode the router's narrowing benefit broadly, a fix already
+# rejected once for being too broad -- keeps the cost bounded to one step
+# per request while still giving the model the option when it's cheapest
+# to offer. Whether the model actually reaches for it once offered is a
+# separate, unverified question -- routing controls what's offered, not
+# what gets chosen.
+_ORIENTATION_TOOL_NAMES = frozenset({"list_directory", "repo_overview"})
 
 
 def is_incomplete_answer(answer: str) -> bool:
@@ -203,13 +227,15 @@ def run(
     while real_steps_used < _MAX_STEPS and wasted_steps_used < _MAX_WASTED_STEPS:
         sendable = trim_to_budget(messages, context_window_tokens)
         query_text = " ".join(m.content for m in sendable if m.role != "system")
-        offered_tools = route_tools(query_text, tools.schemas(), always_keep_names=always_keep_names)
+        is_first_step = real_steps_used == 0 and wasted_steps_used == 0
+        step_keep_names = always_keep_names | _ORIENTATION_TOOL_NAMES if is_first_step else always_keep_names
+        offered_tools = route_tools(query_text, tools.schemas(), always_keep_names=step_keep_names)
         response = model.generate(sendable, tools=offered_tools)
         calls = _resolve_tool_calls(response, known_tool_names)
 
         if not calls:
             real_steps_used += 1
-            if mentions_tool_call_attempt(response.text, known_tool_names):
+            if mentions_tool_call_attempt(response.text):
                 messages.append(Message(role="assistant", content=response.text))
                 messages.append(
                     Message(
@@ -273,6 +299,19 @@ def run(
             try:
                 observation = tools.execute(call.name, call.arguments)
             except Exception as exc:
+                # Record this exact call as already-tried even though it
+                # failed -- otherwise a call that fails identically every
+                # time (e.g. an edit whose result would be invalid syntax,
+                # rejected by tools/syntax_check.py) is invisible to the
+                # dedup guard above, since that only ever recorded
+                # successes. Observed live: a model kept retrying the
+                # exact same syntactically-broken edit_file call across 6
+                # full steps -- each attempt looked "new" to dedup because
+                # none of them had ever succeeded, so every one burned the
+                # primary step budget instead of the bounded wasted-turn
+                # one. An identical retry now correctly lands in the
+                # cheap, capped wasted-turn path instead.
+                already_called.add(_call_key(call))
                 messages.append(
                     Message(
                         role="tool",
@@ -330,7 +369,7 @@ def run(
     # Only if it *still* can't produce real prose after being told
     # directly is this a genuine, unrecoverable give-up.
     final_response = model.generate(trim_to_budget(messages, context_window_tokens))
-    if final_response.tool_calls or mentions_tool_call_attempt(final_response.text, known_tool_names):
+    if final_response.tool_calls or mentions_tool_call_attempt(final_response.text):
         messages.append(Message(role="assistant", content=final_response.text))
         messages.append(
             Message(
@@ -345,7 +384,7 @@ def run(
             )
         )
         final_response = model.generate(trim_to_budget(messages, context_window_tokens))
-        if final_response.tool_calls or mentions_tool_call_attempt(final_response.text, known_tool_names):
+        if final_response.tool_calls or mentions_tool_call_attempt(final_response.text):
             if gave_up_on_repetition:
                 final_text = (
                     f"{_INCOMPLETE_ANSWER_PREFIX} -- kept repeating "

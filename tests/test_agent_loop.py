@@ -159,12 +159,18 @@ def test_retries_after_validation_failure(tmp_path):
 
 
 class AlwaysInvalidModel(ModelInterface):
+    """Always calls read_file missing the required 'path' argument, but
+    varies an extra field each time so every attempt is a distinct (if
+    still invalid) call -- exercises genuine _MAX_STEPS exhaustion
+    specifically, not the separate wasted-turn cap that an exact repeat
+    would now correctly trip (see RepeatsFailingEditModel for that)."""
+
     def __init__(self):
         self.call_count = 0
 
     def generate(self, messages, tools=None):
         self.call_count += 1
-        return ModelResponse(text='{"name": "read_file", "arguments": {}}')
+        return ModelResponse(text=f'{{"name": "read_file", "arguments": {{"attempt": {self.call_count}}}}}')
 
 
 class RecoversWithPlainLanguageAfterNudgeModel(ModelInterface):
@@ -181,7 +187,9 @@ class RecoversWithPlainLanguageAfterNudgeModel(ModelInterface):
     def generate(self, messages, tools=None):
         self.call_count += 1
         if self.call_count <= _MAX_STEPS + 1:
-            return ModelResponse(text='{"name": "read_file", "arguments": {}}')
+            return ModelResponse(
+                text=f'{{"name": "read_file", "arguments": {{"attempt": {self.call_count}}}}}'
+            )
         return ModelResponse(text="Here's what I found so far: nothing conclusive yet.")
 
 
@@ -424,6 +432,45 @@ def test_reports_when_skipping_a_duplicate_call(tmp_path):
     assert any("duplicate" in message.lower() for message in reported)
 
 
+class RepeatsFailingEditModel(ModelInterface):
+    """Keeps retrying the exact same edit_file call, which fails
+    identically every time (the search text doesn't exist in the file).
+    Reproduces the live failure this test targets: a call that never
+    succeeds used to be invisible to the dedup guard (which only ever
+    recorded successes), so every identical retry burned real step
+    budget instead of being caught as a repeat."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        return ModelResponse(
+            text=_call_text(
+                "edit_file",
+                {"path": "sample.txt", "search": "nonexistent text", "replace": "x"},
+            )
+        )
+
+
+def test_dedups_an_identical_call_even_when_it_fails(tmp_path):
+    (tmp_path / "sample.txt").write_text("sample contents", encoding="utf-8")
+    tools = ToolRegistry(confirm=lambda description: True)
+    tools.register(EditFileTool(tmp_path))
+    model = RepeatsFailingEditModel()
+
+    answer = run("Fix sample.txt", model, tools)
+
+    assert "kept repeating" in answer
+    assert is_incomplete_answer(answer)
+    # 1 real failing attempt (still counts as real progress -- an error
+    # is new information) + _MAX_WASTED_STEPS duplicate-only turns (each
+    # identical retry now correctly deduped instead of burning real
+    # budget) + the final no-tools synthesis attempt + one explicit
+    # nudge.
+    assert len(model.calls) == 1 + _MAX_WASTED_STEPS + 2
+
+
 class RerunsVerificationAfterFixModel(ModelInterface):
     """Reproduces the exact live failure: run a command, fix a bug via
     edit_file, then try to re-run the *same* command to verify the fix.
@@ -566,6 +613,72 @@ def test_tool_router_narrows_offered_tools_for_specific_query(tmp_path):
     offered = model.offered_tool_names[0]
     assert "list_directory" in offered
     assert len(offered) < 11  # narrowed from the full 11 registered
+
+
+class TwoStepModel(ModelInterface):
+    """Calls a tool on step 1, then answers on step 2 -- used to check
+    that orientation-tool protection applies on the first step only, not
+    every step (which would erode the router's narrowing benefit
+    broadly, a fix already rejected once for being too wide)."""
+
+    def __init__(self):
+        self.offered_tool_names: list[list[str]] = []
+
+    def generate(self, messages, tools=None):
+        names = [t["function"]["name"] for t in tools] if tools else []
+        self.offered_tool_names.append(names)
+        tool_messages = [m for m in messages if m.role == "tool"]
+        if len(tool_messages) == 0:
+            return ModelResponse(
+                text=_call_text("find_symbol", {"name": "generate_receipt_total"})
+            )
+        return ModelResponse(text="Done.")
+
+
+def test_orientation_tools_offered_only_on_the_first_step(tmp_path):
+    """Reproduces the live finding: list_directory scored 0 against a
+    vague, filename-blind bug report and never got offered at all, even
+    though a directory listing (real filenames like scratch_receipt.py)
+    would have been the cheapest possible lead. Verifies it's force-
+    included on the first step, when nothing is known yet, but not on
+    later steps once real investigation is underway."""
+    from tools.find_callers import FindCallersTool
+    from tools.find_importers import FindImportersTool
+    from tools.find_symbol import FindSymbolTool
+    from tools.html_overview import HtmlOverviewTool
+    from tools.repo_overview import RepoOverviewTool
+
+    (tmp_path / "sample.py").write_text("def generate_receipt_total():\n    pass\n", encoding="utf-8")
+
+    tools = ToolRegistry()
+    tools.register(ReadFileTool(tmp_path))
+    tools.register(ListDirectoryTool(tmp_path))
+    tools.register(SearchCodeTool(tmp_path))
+    tools.register(RunCommandTool(tmp_path))
+    tools.register(EditFileTool(tmp_path))
+    tools.register(CreateFileTool(tmp_path))
+    tools.register(RepoOverviewTool(tmp_path))
+    tools.register(FindSymbolTool(tmp_path))
+    tools.register(HtmlOverviewTool(tmp_path))
+    tools.register(FindImportersTool(tmp_path))
+    tools.register(FindCallersTool(tmp_path))
+    model = TwoStepModel()
+
+    run(
+        "There's a bug in how receipt totals are calculated somewhere in "
+        "the order/pricing code -- can you find and fix it, and verify "
+        "the fix?",
+        model,
+        tools,
+    )
+
+    first_step_offered = model.offered_tool_names[0]
+    assert "list_directory" in first_step_offered
+    assert "repo_overview" in first_step_offered
+
+    second_step_offered = model.offered_tool_names[1]
+    assert "list_directory" not in second_step_offered
+    assert "repo_overview" not in second_step_offered
 
 
 class SkipsSecondPartThenCorrectsModel(ModelInterface):

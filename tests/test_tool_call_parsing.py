@@ -140,11 +140,11 @@ def test_mentions_tool_call_attempt_true_for_malformed_json():
         '{"name": "edit_file", "arguments": {"path": "a.py", "search": "", '
         '"replace": "def f():\\n    """docstring"""\\n    return 1"}}'
     )
-    assert mentions_tool_call_attempt(text, {"edit_file"}) is True
+    assert mentions_tool_call_attempt(text) is True
 
 
 def test_mentions_tool_call_attempt_false_for_plain_prose():
-    assert mentions_tool_call_attempt("Sure, here's a summary.", {"read_file"}) is False
+    assert mentions_tool_call_attempt("Sure, here's a summary.") is False
 
 
 def test_mentions_tool_call_attempt_true_when_a_valid_call_is_present():
@@ -157,7 +157,7 @@ def test_mentions_tool_call_attempt_true_when_a_valid_call_is_present():
     answering, and that fallback shouldn't hand the raw JSON to the user
     either way."""
     text = '{"name": "read_file", "arguments": {"path": "a.py"}}'
-    assert mentions_tool_call_attempt(text, {"read_file"}) is True
+    assert mentions_tool_call_attempt(text) is True
 
 
 def test_mentions_tool_call_attempt_false_for_valid_unrelated_json():
@@ -175,20 +175,28 @@ def test_mentions_tool_call_attempt_false_for_valid_unrelated_json():
         "}\n"
         "```"
     )
-    assert mentions_tool_call_attempt(text, {"read_file", "edit_file"}) is False
+    assert mentions_tool_call_attempt(text) is False
 
 
-def test_mentions_tool_call_attempt_false_when_broken_json_names_unknown_tool():
-    """Broken JSON that doesn't reference any tool the model was actually
-    offered is treated the same as a well-formed-but-unknown-name call
-    already is elsewhere in this module: not a call attempt worth
-    reacting to, since there's no way to tell it was ever meant to be
-    one."""
+def test_mentions_tool_call_attempt_true_when_broken_json_names_an_unrecognized_tool():
+    """Reproduces a real live regression, distinct from (and found after)
+    the other cases here: given no tools left in budget, a model
+    responded with prose plus a clearly tool-call-shaped blob naming
+    "write_file" -- not a real tool this project has (it has create_file,
+    not write_file) -- with genuine (if invalid, due to unescaped nested
+    triple-quotes) arguments. An earlier version of this function
+    required the name to match a *known* tool, so it concluded "not a
+    real attempt" and let the whole broken blob through to the user as if
+    it were a clean answer. A hallucinated tool name with a real
+    arguments payload is still unambiguously an attempt -- it's broken by
+    naming something that doesn't exist, the same way other cases here
+    are broken by malformed JSON or a wrong-shaped argument, and should
+    be treated the same way, not treated as a normal answer."""
     text = (
         '{"name": "delete_everything", "arguments": {"path": "a.py", '
         '"extra": "def f():\\n    """doc"""\\n"}}'
     )
-    assert mentions_tool_call_attempt(text, {"edit_file"}) is False
+    assert mentions_tool_call_attempt(text) is True
 
 
 def test_mentions_tool_call_attempt_true_for_valid_json_with_wrong_shaped_arguments():
@@ -201,7 +209,7 @@ def test_mentions_tool_call_attempt_true_for_valid_json_with_wrong_shaped_argume
     arguments-like key, which is enough to call it an attempt even though
     it never fails to parse."""
     text = '{"name": "read_file", "arguments": "config.yaml"}'
-    assert mentions_tool_call_attempt(text, {"read_file"}) is True
+    assert mentions_tool_call_attempt(text) is True
 
 
 def test_mentions_tool_call_attempt_false_for_tool_name_mentioned_with_no_arguments_key():
@@ -214,4 +222,4 @@ def test_mentions_tool_call_attempt_false_for_tool_name_mentioned_with_no_argume
     key too means an incidental mention, which has no reason to include
     one, doesn't count."""
     text = '{"name": "read_file", "note": "the config mentions read_file settings"}'
-    assert mentions_tool_call_attempt(text, {"read_file"}) is False
+    assert mentions_tool_call_attempt(text) is False

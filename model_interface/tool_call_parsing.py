@@ -130,18 +130,36 @@ _NAME_KEY_PATTERN = re.compile(
 _ARGS_KEY_PATTERN = re.compile(r'"(?:' + "|".join(_ARGS_KEYS) + r')"\s*:')
 
 
-def mentions_tool_call_attempt(text: str, known_tool_names: set[str]) -> bool:
-    """True if a candidate JSON blob in text names a known tool (via the
-    same name-key convention extract_tool_calls() recognizes) AND
-    supplies something under an arguments-like key — regardless of
-    whether the blob is valid JSON, or whether that value is the right
-    shape. That combination is the actual signature of a genuine (if
+def mentions_tool_call_attempt(text: str) -> bool:
+    """True if a candidate JSON blob in text names *anything* under a
+    name-like key (via the same convention extract_tool_calls()
+    recognizes) AND supplies something under an arguments-like key —
+    regardless of whether the blob is valid JSON, whether that value is
+    the right shape, or whether the name matches a tool that actually
+    exists. That combination is the actual signature of a genuine (if
     broken) tool-call attempt, as opposed to text that merely happens to
-    mention a tool's name with no accompanying arguments at all, which is
+    mention something with no accompanying arguments at all, which is
     far more likely incidental than a real attempt.
 
-    Requiring *both* signals exists because either one alone is wrong in
-    a different direction, both found live on the same night:
+    Does NOT require the name to match a real, registered tool. An
+    earlier version did, and that turned out to be a real live gap, not
+    just theoretical caution: given no tools left in budget, a model
+    responded with prose plus a clearly tool-call-shaped blob naming
+    "write_file" -- not a real tool this project has (it has
+    create_file, not write_file) -- with genuine (if invalid, due to
+    unescaped nested triple-quotes) arguments. Because the name didn't
+    match a known tool, this function said "not an attempt," and the
+    whole broken blob was handed to the user as if it were a clean
+    answer -- exactly the failure this function exists to prevent, just
+    via a hallucinated name instead of a malformed shape. Dropping the
+    known-tool-name requirement doesn't reopen either of the two bugs
+    this function was originally built to fix (see below) -- both are
+    independently excluded by the name-key-exists and arguments-key-
+    exists requirements alone, with no dependency on the name being real.
+
+    Requiring *both* signals (a name-like key AND an arguments-like key)
+    exists because either one alone is wrong in a different direction,
+    both found live on the same night:
       - Name alone is too loose: asked to summarize a YAML file, the
         model answered by re-emitting its contents as a plain,
         syntactically valid JSON object with fields like "endpoint_url"
@@ -179,15 +197,14 @@ def mentions_tool_call_attempt(text: str, known_tool_names: set[str]) -> bool:
         try:
             parsed = json.loads(blob)
         except json.JSONDecodeError:
-            name_match = _NAME_KEY_PATTERN.search(blob)
-            if name_match and name_match.group(1) in known_tool_names and _ARGS_KEY_PATTERN.search(blob):
+            if _NAME_KEY_PATTERN.search(blob) and _ARGS_KEY_PATTERN.search(blob):
                 return True
             continue
 
         if not isinstance(parsed, dict):
             continue
         name = _first_present(parsed, _NAME_KEYS)
-        if not isinstance(name, str) or name not in known_tool_names:
+        if not isinstance(name, str):
             continue
         if _first_present(parsed, _ARGS_KEYS) is not None:
             return True
