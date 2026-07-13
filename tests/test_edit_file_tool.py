@@ -101,3 +101,31 @@ def test_target_path_resolves_within_root(tmp_path):
     tool = EditFileTool(tmp_path)
     resolved = tool.target_path({"path": "sample.py", "search": "x", "replace": "y"})
     assert resolved == (tmp_path / "sample.py").resolve()
+
+
+def test_confirmation_message_shows_a_real_diff_for_a_clean_match(tmp_path):
+    (tmp_path / "sample.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
+    tool = EditFileTool(tmp_path)
+
+    message = tool.confirmation_message({"path": "sample.py", "search": "return 1", "replace": "return 2"})
+
+    assert "-    return 1" in message
+    assert "+    return 2" in message
+
+
+def test_confirmation_message_falls_back_when_search_not_found(tmp_path):
+    (tmp_path / "sample.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
+    tool = EditFileTool(tmp_path)
+
+    message = tool.confirmation_message({"path": "sample.py", "search": "not in file", "replace": "x"})
+
+    assert "not in file" in message  # falls back to the generic raw-arguments message
+    assert "@@" not in message  # no diff hunk markers -- no diff was shown
+
+
+def test_confirmation_message_falls_back_when_file_does_not_exist(tmp_path):
+    tool = EditFileTool(tmp_path)
+
+    message = tool.confirmation_message({"path": "missing.py", "search": "x", "replace": "y"})
+
+    assert "@@" not in message

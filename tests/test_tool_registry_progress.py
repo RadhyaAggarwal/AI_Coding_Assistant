@@ -69,3 +69,38 @@ def test_registry_reports_progress_before_the_confirmation_prompt():
 
     assert events[0] == ("report", "Running fake_risky...")
     assert events[1][0] == "confirm"
+
+
+class _FakeToolThatShowsItsResult(Tool):
+    name = "fake_shows_result"
+    description = "test tool"
+    parameters = {"type": "object", "properties": {}, "required": []}
+    show_result = True
+
+    def run(self, **kwargs):
+        return "the real result"
+
+
+def test_default_show_result_is_false():
+    assert _FakeSafeTool().show_result is False
+
+
+def test_registry_reports_the_result_when_show_result_is_true():
+    seen = []
+    registry = ToolRegistry(report=seen.append)
+    registry.register(_FakeToolThatShowsItsResult())
+
+    result = registry.execute("fake_shows_result", {})
+
+    assert result == "the real result"
+    assert seen == ["Running fake_shows_result...", "the real result"]
+
+
+def test_registry_does_not_report_the_result_when_show_result_is_false():
+    seen = []
+    registry = ToolRegistry(report=seen.append)
+    registry.register(_FakeSafeTool())
+
+    registry.execute("fake_safe", {})
+
+    assert seen == ["Running fake_safe..."]  # the "ok" result is never reported

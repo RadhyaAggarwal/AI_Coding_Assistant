@@ -132,12 +132,13 @@ def main() -> None:
     user_request = " ".join(args) or input("Request: ")
 
     transcript: list[Message] = []
+    already_called: set[tuple[str, str]] = set()
     if continue_previous:
         previous = load_conversation(state_dir)
         if previous is None:
             print("No previous conversation to continue -- starting fresh.")
         else:
-            transcript = previous
+            transcript, already_called = previous
 
     try:
         answer = run(
@@ -146,12 +147,13 @@ def main() -> None:
             tools,
             config["model"]["context_window_tokens"],
             transcript=transcript,
+            already_called=already_called,
         )
     except ModelUnavailableError as exc:
         print(f"Model unavailable: {exc}")
         return
 
-    save_conversation(state_dir, transcript)
+    save_conversation(state_dir, transcript, already_called)
     append_session(state_dir, user_request, answer, completed=not is_incomplete_answer(answer))
     print(answer)
     if is_incomplete_answer(answer):

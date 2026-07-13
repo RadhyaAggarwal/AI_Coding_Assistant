@@ -90,3 +90,22 @@ def test_confirmation_message_warns_when_overwriting_existing_file(tmp_path):
     assert "REPLACE" in message
     assert "3" in message  # current line count
     assert "2" in message  # new line count
+
+
+def test_confirmation_message_shows_a_real_diff_when_overwriting(tmp_path):
+    (tmp_path / "existing.py").write_text("a\nb\nc\n", encoding="utf-8")
+    tool = CreateFileTool(tmp_path)
+
+    message = tool.confirmation_message({"path": "existing.py", "content": "a\nX\nc\n"})
+
+    assert "-b" in message
+    assert "+X" in message
+
+
+def test_confirmation_message_shows_a_content_preview_for_a_new_file(tmp_path):
+    tool = CreateFileTool(tmp_path)
+
+    message = tool.confirmation_message({"path": "new.py", "content": "def foo():\n    return 1\n"})
+
+    assert "def foo():" in message
+    assert "return 1" in message

@@ -42,6 +42,14 @@ class ToolRegistry:
         """
         return {tool.name for tool in self._tools.values() if tool.requires_confirmation}
 
+    def dedup_exempt_names(self) -> set[str]:
+        """Names of tools agent_controller/loop.py's duplicate-call guard
+        should never block (see Tool.dedup_exempt) -- tools where human
+        confirmation already gates every single invocation, making a
+        harness-level repeat-block redundant at best.
+        """
+        return {tool.name for tool in self._tools.values() if tool.dedup_exempt}
+
     def report(self, message: str) -> None:
         """Expose the same human-facing reporter used for tool progress
         messages (see Tool.progress_message()), so agent_controller/loop.py
@@ -68,4 +76,7 @@ class ToolRegistry:
             if target is not None:
                 self._snapshots.snapshot_before_edit(target)
 
-        return tool.run(**arguments)
+        result = tool.run(**arguments)
+        if tool.show_result:
+            self._report(result)
+        return result

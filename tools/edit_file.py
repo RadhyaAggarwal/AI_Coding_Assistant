@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from tools.base import Tool
+from tools.diff_preview import colorize_diff, unified_diff_preview
 from tools.path_safety import resolve_within_root
 from tools.syntax_check import InvalidSyntaxError, check_syntax
 
@@ -91,6 +92,34 @@ class EditFileTool(Tool):
 
     def progress_message(self, arguments: dict[str, Any]) -> str:
         return f"Editing {arguments['path']}..."
+
+    def confirmation_message(self, arguments: dict[str, Any]) -> str:
+        """Shows a real before/after diff when it's safe to compute one,
+        rather than just the raw {"search": ..., "replace": ...}
+        arguments -- live-observed gap: across a long --continue chain
+        chasing a bug, a bare argument dump made it hard to tell by eye
+        whether a given edit was progress or a regression relative to a
+        few turns earlier. Falls back to the generic message whenever the
+        diff can't be safely computed here (missing arguments, the file
+        doesn't exist, or 'search' doesn't match exactly once) -- run()
+        does the real validation and will raise a specific error either
+        way; this is purely a preview, not a second source of truth.
+        """
+        path = arguments.get("path")
+        search = arguments.get("search")
+        replace = arguments.get("replace")
+        if not path or not search:
+            return super().confirmation_message(arguments)
+        try:
+            resolved = resolve_within_root(self._project_root, path)
+            current = resolved.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return super().confirmation_message(arguments)
+        if current.count(search) != 1:
+            return super().confirmation_message(arguments)
+        new_content = current.replace(search, replace if replace is not None else "")
+        diff = unified_diff_preview(current, new_content, path)
+        return f"Agent wants to edit '{path}':\n{colorize_diff(diff)}"
 
     def run(self, path: str, search: str, replace: str) -> str:
         resolved = resolve_within_root(self._project_root, path)

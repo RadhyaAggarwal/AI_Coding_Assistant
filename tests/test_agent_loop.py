@@ -519,6 +519,162 @@ def test_allows_rerunning_identical_command_after_a_successful_edit(tmp_path):
     assert "checking" in final_tool_message.content
 
 
+def test_seeded_already_called_does_not_block_a_rerun_after_a_fresh_edit(tmp_path):
+    """The seed represents a call made in a *prior* --continue turn (e.g.
+    a run_command check that ran before this turn started). It must not
+    defeat the existing clear-on-confirmation-gated-success rule: once
+    edit_file succeeds again in *this* turn, the file may have changed,
+    so re-running that seeded command must still actually execute --
+    exactly the same guarantee test_allows_rerunning_identical_command_
+    after_a_successful_edit already covers within a single turn, now
+    also holding across a turn boundary."""
+    (tmp_path / "sample.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    tools = ToolRegistry(confirm=lambda description: True)
+    tools.register(RunCommandTool(tmp_path))
+    tools.register(EditFileTool(tmp_path))
+    model = RerunsVerificationAfterFixModel()
+    seeded_already_called = {
+        ("run_command", json.dumps({"command": "python -c \"print('checking')\""}, sort_keys=True))
+    }
+
+    answer = run(
+        "Fix the bug in sample.py and verify it with a check",
+        model,
+        tools,
+        already_called=seeded_already_called,
+    )
+
+    assert answer == "Verified the fix."
+    final_tool_message = model.calls[3][-1]
+    assert final_tool_message.role == "tool"
+    assert "already called" not in final_tool_message.content
+    assert "checking" in final_tool_message.content
+
+
+class RerunsSameCommandWithNothingElseHappeningModel(ModelInterface):
+    """Reproduces the exact live case: a human explicitly asks to re-run
+    a command that already succeeded, with nothing else having changed
+    -- no edit_file in between, nothing to invalidate the dedup guard's
+    usual clear-on-success rule. Unlike RerunsVerificationAfterFixModel,
+    there's no edit step here at all."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        tool_messages = [m for m in messages if m.role == "tool"]
+        if len(tool_messages) == 0:
+            return ModelResponse(
+                text=_call_text("run_command", {"command": "python -c \"print('checking')\""})
+            )
+        return ModelResponse(text="Verified the fix.")
+
+
+def test_run_command_is_exempt_from_dedup_even_with_nothing_else_changed(tmp_path):
+    """run_command must not be blocked by a seeded prior success even
+    when nothing (no edit_file, no other call) happened in between --
+    unlike edit_file/create_file, a repeat can still be legitimately
+    wanted (a human just re-verifying), and confirmation already gates
+    every invocation regardless of past outcome."""
+    tools = ToolRegistry(confirm=lambda description: True)
+    tools.register(RunCommandTool(tmp_path))
+    model = RerunsSameCommandWithNothingElseHappeningModel()
+    seeded_already_called = {
+        ("run_command", json.dumps({"command": "python -c \"print('checking')\""}, sort_keys=True))
+    }
+
+    answer = run(
+        "Please run the check again to double check",
+        model,
+        tools,
+        already_called=seeded_already_called,
+    )
+
+    assert answer == "Verified the fix."
+    first_tool_message = model.calls[1][-1]
+    assert first_tool_message.role == "tool"
+    assert "already called" not in first_tool_message.content
+    assert "checking" in first_tool_message.content
+
+
+class RepeatsSuccessfulEditModel(ModelInterface):
+    """Unlike run_command, edit_file keeps no dedup exemption: an
+    identical repeat after a real success would just fail on its own
+    (the 'search' text it needs is already gone), so there's nothing
+    useful about letting it re-reach the confirmation prompt."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        return ModelResponse(
+            text=_call_text("edit_file", {"path": "sample.py", "search": "return 1", "replace": "return 2"})
+        )
+
+
+def test_edit_file_keeps_no_dedup_exemption_after_a_seeded_success(tmp_path):
+    (tmp_path / "sample.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    reported = []
+    tools = ToolRegistry(confirm=lambda description: True, report=reported.append)
+    tools.register(EditFileTool(tmp_path))
+    model = RepeatsSuccessfulEditModel()
+    seeded_already_called = {
+        ("edit_file", json.dumps({"path": "sample.py", "search": "return 1", "replace": "return 2"}, sort_keys=True))
+    }
+
+    run("Apply that same fix again", model, tools, already_called=seeded_already_called)
+
+    assert any("duplicate" in message.lower() for message in reported)
+
+
+class RepeatsASeededCallModel(ModelInterface):
+    """Always attempts the exact same read_file call -- the one already
+    seeded into already_called, simulating a call made in a prior
+    --continue turn with nothing in between to invalidate it."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        return ModelResponse(text=_call_text("read_file", {"path": "sample.txt"}))
+
+
+def test_seeded_already_called_blocks_a_stale_repeat_from_a_prior_turn(tmp_path):
+    (tmp_path / "sample.txt").write_text("contents", encoding="utf-8")
+    reported = []
+    tools = ToolRegistry(report=reported.append)
+    tools.register(ReadFileTool(tmp_path))
+    model = RepeatsASeededCallModel()
+    seeded_already_called = {("read_file", json.dumps({"path": "sample.txt"}, sort_keys=True))}
+
+    run("Look at sample.txt again", model, tools, already_called=seeded_already_called)
+
+    assert any("duplicate" in message.lower() for message in reported)
+
+
+def test_already_called_is_synced_back_to_the_caller_after_run(tmp_path):
+    """Mirrors how `transcript` is mutated in place (see
+    test_transcript_empty_list_behaves_like_a_fresh_conversation) so a
+    caller can persist it and pass it back into the next --continue
+    call, the same way main.py does."""
+    (tmp_path / "auth.py").write_text("def login():\n    pass\n", encoding="utf-8")
+    tools = ToolRegistry()
+    tools.register(SearchCodeTool(tmp_path))
+    tools.register(ReadFileTool(tmp_path))
+    model = MultiStepModel()
+    already_called: set[tuple[str, str]] = set()
+
+    run("Find the login function and explain it", model, tools, already_called=already_called)
+
+    assert already_called == {
+        ("search_code", json.dumps({"query": "login"}, sort_keys=True)),
+        ("read_file", json.dumps({"path": "auth.py"}, sort_keys=True)),
+    }
+
+
 class EditVerifyFixVerifyModel(ModelInterface):
     """Simulates a realistic fix cycle: create a buggy file (via
     create_file, since edit_file no longer creates anything), verify by

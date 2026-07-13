@@ -87,6 +87,14 @@ class RunCommandTool(Tool):
         "required": ["command"],
     }
     requires_confirmation = True
+    # See Tool.show_result -- a human should see real command output
+    # (e.g. actual pytest results), not only the model's own narration
+    # of what it showed.
+    show_result = True
+    # See Tool.dedup_exempt -- confirmation already gates every call to
+    # this tool, so a repeat (e.g. re-running the tests to confirm a fix)
+    # should reach that prompt, not get silently refused beforehand.
+    dedup_exempt = True
 
     def __init__(self, project_root: str | Path, timeout_seconds: float = 60):
         self._project_root = Path(project_root).resolve()
@@ -99,7 +107,7 @@ class RunCommandTool(Tool):
         command = arguments.get("command", "")
         warnings = _dangerous_command_warnings(command)
         if not warnings:
-            return f"Agent wants to run 'run_command' with arguments {arguments}"
+            return f"Agent wants to run: {command}"
         warning_lines = "\n".join(f"  WARNING: {w}" for w in warnings)
         return f"Agent wants to run: {command}\n{warning_lines}"
 

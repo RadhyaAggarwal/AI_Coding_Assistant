@@ -47,6 +47,34 @@ rather than trusting the model to self-regulate:
     observed live, a model retried one syntactically-broken edit_file
     call across a full 6-step budget, each attempt burning real budget
     because none had ever succeeded and so none were ever remembered.
+    This memory also survives across --continue turns (see the
+    already_called parameter below), not just within one run() call --
+    otherwise it resets to empty on every fresh invocation, and a model
+    can re-run the exact same already-failed search several separate
+    --continue turns in a row. Observed live: three consecutive
+    --continue turns each ran the identical search_code query and got
+    the identical unhelpful result, including on a turn where the human
+    had just supplied the correct filename directly -- the dedup guard
+    that already prevents this within a turn had no memory of the
+    previous turn's attempt. Seeding must still respect the
+    clear-on-confirmation-gated-success rule above, not just union every
+    past call in -- otherwise a legitimate "fix in turn N, re-verify in
+    turn N+1" cross-turn cycle would be wrongly blocked the same way the
+    single-turn version of this bug already was. run_command is fully
+    exempt from this guard regardless (see Tool.dedup_exempt), not just
+    protected by the clear-on-success rule above -- unlike edit_file/
+    create_file, where an identical repeat after success is never useful
+    (the edited text is already consumed, or the file already has that
+    exact content), a repeated run_command call can still be wanted: a
+    human re-verifying a fix with the exact same test command wants to
+    see it actually run again, not be told it's already known to pass.
+    Live-observed: exactly that request, refused by this guard because
+    the command had already succeeded once and nothing else had changed
+    since -- technically correct that nothing *would* differ, but it
+    silently overrode an explicit human request instead of ever reaching
+    the confirmation prompt that already gates every run_command call
+    regardless of past outcome. edit_file/create_file keep no such
+    exemption, since neither has this failure mode.
   - Answering a compound request without actually addressing every part
     of it — a model can produce a confident-sounding answer that's
     really a refusal, a guess, or drops a part it already investigated.
@@ -189,12 +217,21 @@ def _sync_transcript(transcript: list[Message] | None, messages: list[Message]) 
         transcript[:] = messages
 
 
+def _sync_already_called(
+    already_called: set[tuple[str, str]] | None, call_history: set[tuple[str, str]]
+) -> None:
+    if already_called is not None:
+        already_called.clear()
+        already_called.update(call_history)
+
+
 def run(
     user_request: str,
     model: ModelInterface,
     tools: ToolRegistry,
     context_window_tokens: int = _DEFAULT_CONTEXT_WINDOW_TOKENS,
     transcript: list[Message] | None = None,
+    already_called: set[tuple[str, str]] | None = None,
 ) -> str:
     """Run one request through the agent loop and return its final answer.
 
@@ -208,6 +245,16 @@ def run(
     not summarized -- see agent_controller/conversation_store.py for the
     persistence side of this and why summarizing was rejected here the
     same way it was for context_budget.py.
+
+    already_called works the same way, for the duplicate-call dedup guard
+    below: a seed set of (tool_name, arguments_json) pairs already known
+    to have been tried, and mutated in place on the way out so a caller
+    can persist and replay it into the next --continue call. Deliberately
+    NOT reconstructed from transcript by re-parsing message text on every
+    call -- that would duplicate this function's own tool-call parsing
+    and its clear-on-confirmation-gated-success rule in a second place;
+    persisting the exact set this function already maintains keeps there
+    being exactly one place that rule lives.
     """
     if transcript:
         messages = list(transcript) + [Message(role="user", content=user_request)]
@@ -218,7 +265,8 @@ def run(
         ]
     known_tool_names = {schema["function"]["name"] for schema in tools.schemas()}
     always_keep_names = frozenset(tools.confirmation_required_names())
-    already_called: set[tuple[str, str]] = set()
+    dedup_exempt_names = frozenset(tools.dedup_exempt_names())
+    call_history: set[tuple[str, str]] = set(already_called) if already_called else set()
     coverage_nudge_used = False
     real_steps_used = 0
     wasted_steps_used = 0
@@ -270,6 +318,7 @@ def run(
                     continue
             messages.append(Message(role="assistant", content=response.text))
             _sync_transcript(transcript, messages)
+            _sync_already_called(already_called, call_history)
             return response.text
 
         messages.append(
@@ -278,7 +327,7 @@ def run(
 
         made_progress = False
         for call in calls:
-            if _call_key(call) in already_called:
+            if call.name not in dedup_exempt_names and _call_key(call) in call_history:
                 tools.report(
                     f"Skipping duplicate call to '{call.name}' -- already ran "
                     "with these exact arguments."
@@ -311,7 +360,7 @@ def run(
                 # primary step budget instead of the bounded wasted-turn
                 # one. An identical retry now correctly lands in the
                 # cheap, capped wasted-turn path instead.
-                already_called.add(_call_key(call))
+                call_history.add(_call_key(call))
                 messages.append(
                     Message(
                         role="tool",
@@ -338,8 +387,8 @@ def run(
                 # deliberately conservative, since it's cheap (this set
                 # is small) and the alternative is silently blocking a
                 # legitimate fix-then-reverify cycle.
-                already_called.clear()
-            already_called.add(_call_key(call))
+                call_history.clear()
+            call_history.add(_call_key(call))
             messages.append(Message(role="tool", content=cap_observation(observation)))
 
         if made_progress:
@@ -394,8 +443,10 @@ def run(
                 final_text = f"{_INCOMPLETE_ANSWER_PREFIX} within {_MAX_STEPS} steps."
             messages.append(Message(role="assistant", content=final_text))
             _sync_transcript(transcript, messages)
+            _sync_already_called(already_called, call_history)
             return final_text
 
     messages.append(Message(role="assistant", content=final_response.text))
     _sync_transcript(transcript, messages)
+    _sync_already_called(already_called, call_history)
     return final_response.text

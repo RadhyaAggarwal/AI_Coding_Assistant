@@ -20,6 +20,38 @@ class Tool(ABC):
     # tools are read-only and path-contained.
     requires_confirmation: bool = False
 
+    # If True, ToolRegistry.execute() prints this tool's real result to
+    # the human after it runs, not just the progress message beforehand.
+    # Defaults False -- most tool results (a file's full content, a
+    # symbol lookup) would just be noisy to print in full, and the
+    # model's own answer already synthesizes them. run_command is the
+    # deliberate exception: live-observed, a human only ever saw the
+    # model's own narration of what a test run showed, never the actual
+    # output -- and the model's narration didn't always accurately track
+    # it (e.g. not registering that a change increased the number of
+    # failing tests). Showing the real output lets a human catch that
+    # directly instead of relying entirely on the model's summary.
+    show_result: bool = False
+
+    # If True, agent_controller/loop.py's duplicate-call guard never
+    # blocks a repeat of this tool, no matter what the exact same call
+    # returned last time. Defaults False -- for most tools (including
+    # edit_file/create_file) an identical repeat genuinely can't add
+    # anything: edit_file's 'search' text is consumed by a successful
+    # edit, so an identical repeat either fails on its own (the text is
+    # gone) or was never useful; create_file just rewrites the same
+    # bytes it already wrote. run_command is the deliberate exception --
+    # its result can be worth seeing again even with nothing else
+    # changed (a human re-verifying a fix), and unlike those two it
+    # already requires human confirmation on *every* single invocation
+    # regardless of past outcome, so that confirmation prompt is already
+    # the real gate -- a harness-level dedup block on top of it can only
+    # get in the way, not add protection. Live-observed: a human
+    # explicitly asked to re-run pytest after a fix, and the dedup guard
+    # silently refused before the confirmation prompt was ever shown,
+    # because the exact same command had already succeeded once.
+    dedup_exempt: bool = False
+
     @abstractmethod
     def run(self, **kwargs: Any) -> str:
         """Execute the tool and return its result as a string."""

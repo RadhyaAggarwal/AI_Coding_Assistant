@@ -68,6 +68,26 @@ def test_confirmation_required_names_lists_only_confirmation_gated_tools():
     assert registry.confirmation_required_names() == {"fake_risky"}
 
 
+class _FakeDedupExemptTool(Tool):
+    name = "fake_dedup_exempt"
+    description = "test tool"
+    parameters = {"type": "object", "properties": {}, "required": []}
+    requires_confirmation = True
+    dedup_exempt = True
+
+    def run(self, **kwargs):
+        return "done"
+
+
+def test_dedup_exempt_names_lists_only_exempt_tools():
+    registry = ToolRegistry(confirm=lambda description: True)
+    registry.register(_FakeRiskyTool())  # requires confirmation, not dedup-exempt
+    registry.register(_FakeSafeTool())  # neither
+    registry.register(_FakeDedupExemptTool())
+
+    assert registry.dedup_exempt_names() == {"fake_dedup_exempt"}
+
+
 class _FakeToolWithCustomConfirmationMessage(Tool):
     name = "fake_custom"
     description = "test tool"

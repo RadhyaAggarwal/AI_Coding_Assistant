@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from tools.base import Tool
+from tools.diff_preview import colorize_diff, content_preview, unified_diff_preview
 from tools.path_safety import resolve_within_root
 from tools.syntax_check import InvalidSyntaxError, check_syntax
 
@@ -72,21 +73,25 @@ class CreateFileTool(Tool):
 
     def confirmation_message(self, arguments: dict[str, Any]) -> str:
         path = arguments["path"]
+        content = arguments.get("content", "")
         resolved = resolve_within_root(self._project_root, path)
         if resolved.is_file():
             try:
-                current_lines = len(resolved.read_text(encoding="utf-8").splitlines())
-                new_lines = len(arguments["content"].splitlines())
+                current = resolved.read_text(encoding="utf-8")
+                new_lines = len(content.splitlines())
+                diff = unified_diff_preview(current, content, path)
                 return (
                     f"Agent wants to run 'create_file' on '{path}', which "
-                    f"already exists ({current_lines} lines) — this will "
-                    f"REPLACE its ENTIRE content with {new_lines} new "
-                    "lines, discarding everything else currently in the "
-                    "file."
+                    f"already exists ({len(current.splitlines())} lines) — "
+                    f"this will REPLACE its ENTIRE content with {new_lines} "
+                    f"new lines, discarding everything else currently in "
+                    f"the file:\n{colorize_diff(diff)}"
                 )
             except (OSError, UnicodeDecodeError):
                 pass  # fall through to the generic message below
-        return f"Agent wants to run 'create_file' with arguments {arguments}"
+        # Genuinely new file -- nothing to diff against, so show a
+        # preview of what's about to be written instead.
+        return f"Agent wants to create '{path}' ({len(content.splitlines())} lines):\n{content_preview(content)}"
 
     def run(self, path: str, content: str) -> str:
         resolved = resolve_within_root(self._project_root, path)

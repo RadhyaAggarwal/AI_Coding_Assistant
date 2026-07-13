@@ -8,6 +8,25 @@ def test_runs_command_and_captures_output(tmp_path):
     assert "hello" in result
 
 
+def test_dedup_exempt_is_true():
+    """A human already confirms every single run_command call, success
+    or failure, past or present -- the loop's duplicate-call guard
+    should never second-guess that by refusing a repeat before it even
+    reaches the confirmation prompt. See tools/base.py's
+    Tool.dedup_exempt for the live case this fixes: an explicit request
+    to re-run the same test command was silently refused as "already
+    called" because it had already succeeded once."""
+    assert RunCommandTool.dedup_exempt is True
+
+
+def test_show_result_is_true():
+    """A human should see real command output (e.g. actual pytest
+    results), not only the model's own narration of what it showed --
+    live-observed: the model's own summary didn't always accurately
+    track a test run's real pass/fail count."""
+    assert RunCommandTool.show_result is True
+
+
 def test_nonzero_exit_code_reported(tmp_path):
     tool = RunCommandTool(tmp_path, timeout_seconds=10)
     result = tool.run(command='python -c "import sys; sys.exit(3)"')
@@ -24,6 +43,19 @@ def test_confirmation_message_generic_for_ordinary_command(tmp_path):
     tool = RunCommandTool(tmp_path)
     message = tool.confirmation_message({"command": "pytest tests/"})
     assert "WARNING" not in message
+
+
+def test_confirmation_message_is_human_readable_not_a_raw_dict(tmp_path):
+    """Live-observed rough edge: the ordinary (non-dangerous) case fell
+    back to the generic 'Agent wants to run 'run_command' with arguments
+    {...}' message -- a raw Python dict repr shown right below an already
+    human-readable progress line saying the same thing. edit_file and
+    create_file both got a proper human-facing confirmation message; this
+    tool should too."""
+    tool = RunCommandTool(tmp_path)
+    message = tool.confirmation_message({"command": "pytest tests/test_scratch_grade.py"})
+    assert message == "Agent wants to run: pytest tests/test_scratch_grade.py"
+    assert "{" not in message
 
 
 def test_confirmation_message_warns_for_git_push():
