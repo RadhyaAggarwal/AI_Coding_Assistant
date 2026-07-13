@@ -46,12 +46,19 @@ class OllamaAdapter(ModelInterface):
         rather than generating from one) should stay responsive even while
         a generate call is stuck, letting this distinguish "slow" from
         "unresponsive" in a few seconds instead of the full timeout.
+
+        Also checks the response's status code, not just whether the
+        connection itself failed -- a broken tunnel/proxy hop can return a
+        connection-level success with a 404/502/503 body, which used to
+        pass this check silently and only surface later as an ugly raw
+        traceback from the real request.
         """
         try:
-            requests.get(
+            response = requests.get(
                 f"{self._endpoint_url}/api/tags",
                 timeout=self._health_check_timeout,
             )
+            response.raise_for_status()
         except requests.exceptions.RequestException as exc:
             raise ModelUnavailableError(
                 f"Ollama at {self._endpoint_url} did not respond to a "
@@ -83,14 +90,22 @@ class OllamaAdapter(ModelInterface):
                 json=payload,
                 timeout=self._timeout,
             )
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            response.raise_for_status()
+        except requests.exceptions.RequestException as exc:
+            # Covers a timeout/connection failure (Ollama itself stuck)
+            # and an HTTP error status (a broken tunnel/proxy hop) alike --
+            # our request is always well-formed, so any failure talking to
+            # Ollama is realistically an availability problem on the other
+            # end, not a bug in what we sent. Observed live: an unhandled
+            # HTTPError (a 404, then later a 503, from a flaky tunnel) hit
+            # main.py as a raw traceback instead of the clean message this
+            # exception type is supposed to produce.
             raise ModelUnavailableError(
                 f"Ollama at {self._endpoint_url} did not respond within "
                 f"{self._timeout}s (passed its health check moments "
                 f"earlier, so it may have gotten stuck mid-request -- try "
                 f"restarting the Ollama process before retrying)."
             ) from exc
-        response.raise_for_status()
         data = response.json()
 
         message = data.get("message", {})

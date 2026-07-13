@@ -72,3 +72,43 @@ def test_raises_model_unavailable_when_real_request_times_out_after_healthy_chec
 
     with pytest.raises(ModelUnavailableError):
         adapter.generate([Message(role="user", content="hi")])
+
+
+def _mock_bad_status_response(status_code):
+    response = MagicMock()
+    response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+        f"{status_code} error", response=MagicMock(status_code=status_code)
+    )
+    return response
+
+
+@patch("model_interface.ollama_adapter.requests.get")
+def test_raises_model_unavailable_when_health_check_returns_a_bad_status(mock_get):
+    """A broken tunnel/proxy hop can connect fine but return a 404/502/503
+    body -- that used to pass the health check silently (no exception was
+    raised for a non-2xx GET without calling raise_for_status), only
+    surfacing later as a raw traceback from the real request."""
+    mock_get.return_value = _mock_bad_status_response(404)
+    adapter = OllamaAdapter("http://localhost:11434", "qwen2.5-coder:7b")
+
+    with patch("model_interface.ollama_adapter.requests.post") as mock_post:
+        with pytest.raises(ModelUnavailableError):
+            adapter.generate([Message(role="user", content="hi")])
+        mock_post.assert_not_called()
+
+
+@patch("model_interface.ollama_adapter.requests.get")
+@patch("model_interface.ollama_adapter.requests.post")
+def test_raises_model_unavailable_not_a_raw_http_error_when_real_request_returns_bad_status(
+    mock_post, mock_get
+):
+    """Live-observed: an unhandled HTTPError (a 404, then later a 503,
+    from a flaky ngrok tunnel) crashed main.py with a raw traceback
+    instead of the clean ModelUnavailableError message every other
+    availability failure already produces."""
+    mock_get.return_value = MagicMock()
+    mock_post.return_value = _mock_bad_status_response(503)
+    adapter = OllamaAdapter("http://localhost:11434", "qwen2.5-coder:7b")
+
+    with pytest.raises(ModelUnavailableError):
+        adapter.generate([Message(role="user", content="hi")])
