@@ -1,14 +1,29 @@
 """Plain-text search tool ("find X across the project"). Not AST-aware —
 that's repo_index/'s job once it's built — this is a simple, scoped,
 path-validated substring grep across project files.
+
+Reuses repo_index.scanner's skip-dir list rather than keeping its own
+copy -- this tool used to maintain a separate, near-identical set that
+was missing ".agent_state" (repo_index's list already excludes it).
+Live-observed real consequence, not theoretical: once --continue and the
+session log started writing conversation history into .agent_state/,
+search_code results got buried under noise from the agent's own past
+conversation turns (which themselves quote earlier search results,
+compounding across successive --continue calls) -- a real match
+(scratch_receipt.py's generate_receipt_total) was present in the output
+the whole time but the model never acted on it, surrounded by 16 lines
+of self-referential conversation-log noise. A single shared list is the
+actual fix, not just adding ".agent_state" here too, since two
+independently-maintained copies is exactly how they drifted apart in the
+first place.
 """
 from pathlib import Path
 from typing import Any
 
+from repo_index.scanner import SKIP_DIR_NAMES
 from tools.base import Tool
 from tools.path_safety import resolve_within_root
 
-_SKIP_DIR_NAMES = {".git", "__pycache__", "node_modules", ".venv", "venv", ".pytest_cache"}
 _MAX_MATCHES = 50
 
 
@@ -55,7 +70,7 @@ class SearchCodeTool(Tool):
             if len(matches) >= _MAX_MATCHES:
                 break
             if not file_path.is_file() or any(
-                part in _SKIP_DIR_NAMES for part in file_path.parts
+                part in SKIP_DIR_NAMES for part in file_path.parts
             ):
                 continue
             try:
