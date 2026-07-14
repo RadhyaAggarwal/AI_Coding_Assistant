@@ -114,6 +114,30 @@ rather than trusting the model to self-regulate:
     running unbounded.
 A hard step budget bounds all of the above combined, so a model that
 never converges can't run forever.
+
+A fabrication risk was tried and reverted here, worth recording so it
+isn't re-attempted the same way: describing a fix as already applied
+when no edit had actually succeeded (observed live -- a request
+exhausted its step budget having only investigated, never called
+edit_file, and the final answer still said "I proposed a fix by
+modifying..."). The first fix injected a fact into the model's own
+context before its answer, grounding it with whether a real change had
+happened -- this worked for the case it targeted, but then misfired on
+an ordinary info-only query that never needed a fix at all: the same
+loop-exit path fires whenever wasted-step budget runs out too (e.g.
+several redundant duplicate-call attempts in a row), not just when a
+fix was genuinely expected, and the injected note's fix-specific
+wording derailed an otherwise-correct answer into describing "no
+files were changed" instead of answering the actual question that had
+already been fully answered by that point. Reverted in favor of a
+non-model-facing fix: main.py now prints a mechanically-derived,
+always-accurate summary of which files actually changed (or that none
+did) alongside every answer, scanning the transcript's real tool
+results directly rather than trusting -- or trying to correct -- the
+model's own narration. Same "ground with real facts, don't trust
+narration" principle this project already relies on for diffs and
+command output, just not fed back into the model's own context, where
+it risks influencing behavior it was never meant to affect.
 """
 import json
 from pathlib import Path
@@ -266,6 +290,7 @@ def run(
     known_tool_names = {schema["function"]["name"] for schema in tools.schemas()}
     always_keep_names = frozenset(tools.confirmation_required_names())
     dedup_exempt_names = frozenset(tools.dedup_exempt_names())
+    always_mutates_names = frozenset(tools.always_mutates_names())
     call_history: set[tuple[str, str]] = set(already_called) if already_called else set()
     coverage_nudge_used = False
     real_steps_used = 0
@@ -361,32 +386,58 @@ def run(
                 # one. An identical retry now correctly lands in the
                 # cheap, capped wasted-turn path instead.
                 call_history.add(_call_key(call))
+                # Deliberately does NOT say anything like "or answer
+                # directly if you can't" -- live-observed, that phrasing
+                # directly contradicted the system prompt's "don't ask
+                # the user to do this manually" instruction, and being
+                # the most recent thing in context before the model's
+                # next response, it won. This isn't the right place to
+                # grant that permission anyway: the step-budget-
+                # exhaustion synthesis call below already is, and only
+                # once real attempts are genuinely exhausted -- saying it
+                # again here, after a single failure with steps and
+                # tools still available, undermines that rather than
+                # complementing it. The existing dedup-on-failure guard
+                # above (already_called records failures, not just
+                # successes) independently prevents this from causing an
+                # infinite retry loop, so removing the escape hatch here
+                # doesn't reopen that older problem.
                 messages.append(
                     Message(
                         role="tool",
-                        content=f"Error: {exc}. Correct the call and try again, or answer directly if you can't.",
+                        content=(
+                            f"Error: {exc}. Other tools are still available -- try a "
+                            "different one or a different approach. Do not tell the "
+                            "user to make this change manually; you have tools that "
+                            "can do it."
+                        ),
                     )
                 )
                 continue
 
-            if call.name in always_keep_names:
-                # A confirmation-gated tool just ran successfully --
-                # edit_file/create_file definitely may have changed a
-                # file, and run_command might have too. Observed live:
-                # after a successful edit_file fix, the model correctly
-                # tried to re-run the *same* run_command test command to
-                # verify it -- exactly the right thing to do -- and got
-                # refused as "already called," never seeing that the fix
-                # worked, because dedup assumed an identical call always
-                # gives an identical result. That's true for read-only
-                # lookups against unchanged files, not for a command
-                # whose output depends on file state that just changed.
-                # Clearing here means every prior "already known" result
-                # is treated as possibly stale from this point on, not
-                # just the specific file a tool happened to touch --
-                # deliberately conservative, since it's cheap (this set
-                # is small) and the alternative is silently blocking a
-                # legitimate fix-then-reverify cycle.
+            if call.name in always_mutates_names:
+                # edit_file/create_file just ran successfully -- both
+                # only ever return without raising when they've genuinely
+                # written a file (see Tool.always_mutates), so project
+                # state may have changed underneath every other cached
+                # result. Clearing here means every prior "already known"
+                # result is treated as possibly stale from this point on,
+                # not just the specific file a tool happened to touch --
+                # deliberately conservative, since it's cheap (this set is
+                # small) and the alternative is silently blocking a
+                # legitimate fix-then-reverify cycle (see run_command's
+                # dedup_exempt flag, which handles that specific case
+                # directly regardless of this clearing). run_command is
+                # deliberately NOT in always_mutates_names, even though it
+                # also requires confirmation: it can return without
+                # raising after having done nothing at all (a bad path, a
+                # typo, a syntax error all just produce an error *string*,
+                # not an exception) -- observed live, a run_command call
+                # that never actually executed anything still cleared
+                # every other tool's cached result, letting the model
+                # re-burn real step budget re-doing lookups it already had
+                # answers to, for no reason -- the exact thing this guard
+                # exists to prevent, reintroduced through this one path.
                 call_history.clear()
             call_history.add(_call_key(call))
             messages.append(Message(role="tool", content=cap_observation(observation)))

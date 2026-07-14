@@ -14,6 +14,19 @@ def test_rejects_invalid_python():
         check_syntax(Path("x.py"), "def f(:\n    return 1\n")
 
 
+def test_rejects_return_outside_a_function():
+    """Reproduces the exact live failure: ast.parse() only builds a
+    syntax tree and accepts anything grammatically well-formed --
+    'return' outside a function is only caught by Python's compiler,
+    not its parser. A model's edit merged a line into the wrong scope
+    (an indentation slip), and this check silently accepted content
+    that genuinely could not be imported, until fixed to use compile()
+    instead of ast.parse()."""
+    corrupted = "call_log = []\ndef f(x):\n    call_log.append(x)\nreturn x * 2\n"
+    with pytest.raises(InvalidSyntaxError, match="not valid .py syntax"):
+        check_syntax(Path("x.py"), corrupted)
+
+
 def test_rejects_the_exact_live_double_escaped_docstring_corruption():
     """Reproduces the exact live failure: a model double-escaped a
     docstring's quotes when embedding Python into a JSON string argument

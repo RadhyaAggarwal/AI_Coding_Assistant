@@ -17,7 +17,6 @@ repo_index/ already depends on. Files of any other extension (or one
 with no dedicated checker, e.g. no TypeScript grammar is installed) are
 left unvalidated, the same scope limit repo_index/ already has.
 """
-import ast
 from pathlib import Path
 from typing import Callable
 
@@ -36,7 +35,22 @@ class InvalidSyntaxError(Exception):
 
 
 def _check_python(content: str) -> None:
-    ast.parse(content)
+    # compile(), not ast.parse() -- live-observed the difference matters:
+    # ast.parse() only builds a syntax tree and accepts anything
+    # *grammatically* well-formed, but Python enforces several rules only
+    # at compile time, not parse time (a bare `return`/`yield` outside a
+    # function, `break`/`continue` outside a loop, `nonlocal` with no
+    # matching enclosing binding). A model's edit left `return x * 2` at
+    # module level (an indentation slip merging a line into the wrong
+    # scope) and ast.parse() accepted it silently -- the file was written
+    # and genuinely couldn't be imported, exactly the corruption this
+    # check exists to prevent, through a gap that had been there since
+    # this file was first written, just never exercised by an error of
+    # this specific shape before. compile(..., mode="exec") performs the
+    # same full validation the real interpreter does before ever running
+    # the file, and still raises the same SyntaxError type this function
+    # already catches -- no other code here needs to change.
+    compile(content, "<content>", "exec")
 
 
 def _make_tree_sitter_checker(language_module) -> Callable[[str], None]:

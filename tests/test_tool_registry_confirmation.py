@@ -50,6 +50,32 @@ def test_denies_when_not_confirmed():
     assert tool.ran is False
 
 
+def test_denies_with_no_reason_when_confirm_returns_false():
+    tool = _FakeRiskyTool()
+    registry = ToolRegistry(confirm=lambda description: False)
+    registry.register(tool)
+
+    with pytest.raises(ToolCallDeniedError) as exc_info:
+        registry.execute("fake_risky", {})
+
+    assert ":" not in str(exc_info.value)
+
+
+def test_denies_with_feedback_when_confirm_returns_a_string():
+    """The live-observed gap this closes: a plain decline gave the model
+    nothing to act on. A human's typed reason must reach the raised
+    error's message, since that's what agent_controller/loop.py's
+    per-call error feedback surfaces to the model."""
+    tool = _FakeRiskyTool()
+    registry = ToolRegistry(confirm=lambda description: "there would be duplicate lines of code")
+    registry.register(tool)
+
+    with pytest.raises(ToolCallDeniedError, match="there would be duplicate lines of code"):
+        registry.execute("fake_risky", {})
+
+    assert tool.ran is False
+
+
 def test_read_only_tool_never_prompts():
     def _explode(_description):
         raise AssertionError("confirm() should not be called for a safe tool")
@@ -86,6 +112,26 @@ def test_dedup_exempt_names_lists_only_exempt_tools():
     registry.register(_FakeDedupExemptTool())
 
     assert registry.dedup_exempt_names() == {"fake_dedup_exempt"}
+
+
+class _FakeAlwaysMutatesTool(Tool):
+    name = "fake_always_mutates"
+    description = "test tool"
+    parameters = {"type": "object", "properties": {}, "required": []}
+    requires_confirmation = True
+    always_mutates = True
+
+    def run(self, **kwargs):
+        return "done"
+
+
+def test_always_mutates_names_lists_only_flagged_tools():
+    registry = ToolRegistry(confirm=lambda description: True)
+    registry.register(_FakeRiskyTool())  # requires confirmation, not always_mutates
+    registry.register(_FakeSafeTool())  # neither
+    registry.register(_FakeAlwaysMutatesTool())
+
+    assert registry.always_mutates_names() == {"fake_always_mutates"}
 
 
 class _FakeToolWithCustomConfirmationMessage(Tool):

@@ -30,6 +30,9 @@ asks the user to paste code it could retrieve itself)
   call the right tool for it. Never guess or invent it.
 - Before using an exact value in a tool call (literal text, an identifier,
   a command), get it from a real observation first — don't approximate it.
+- When diagnosing a reported bug, run a relevant test first if one
+  exists — concrete failing output is stronger evidence than reading
+  code alone.
 - If you already know enough to answer without a tool, answer directly.
 
 ## 3. Use tool results
@@ -39,6 +42,9 @@ asks the user to paste code it could retrieve itself)
 - Don't call the same tool with the same arguments twice.
 - If a tool call fails, read the error and change your approach — don't
   repeat the same failing call.
+- If a tool call is declined or fails, try a different approach with the
+  tools available — don't ask the user to perform the action manually
+  instead.
 
 ## 4. Finish
 

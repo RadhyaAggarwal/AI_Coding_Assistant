@@ -83,6 +83,9 @@ class EditFileTool(Tool):
         "required": ["path", "search", "replace"],
     }
     requires_confirmation = True
+    # See Tool.always_mutates -- this tool never returns without having
+    # actually written the file (every failure case raises instead).
+    always_mutates = True
 
     def __init__(self, project_root: str | Path):
         self._project_root = Path(project_root).resolve()

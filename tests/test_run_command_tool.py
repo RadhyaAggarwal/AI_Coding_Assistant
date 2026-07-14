@@ -8,6 +8,17 @@ def test_runs_command_and_captures_output(tmp_path):
     assert "hello" in result
 
 
+def test_always_mutates_is_false():
+    """Unlike edit_file/create_file, returning normally from run_command
+    doesn't guarantee anything actually happened -- a bad path, a typo,
+    or a syntax error all just produce an error string, not an
+    exception. Live-observed: exactly that kind of no-op "success" used
+    to clear every other tool's cached dedup result, letting the model
+    re-burn real step budget re-doing lookups it already had answers
+    to."""
+    assert RunCommandTool.always_mutates is False
+
+
 def test_dedup_exempt_is_true():
     """A human already confirms every single run_command call, success
     or failure, past or present -- the loop's duplicate-call guard

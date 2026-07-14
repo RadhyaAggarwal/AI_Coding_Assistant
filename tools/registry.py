@@ -50,6 +50,14 @@ class ToolRegistry:
         """
         return {tool.name for tool in self._tools.values() if tool.dedup_exempt}
 
+    def always_mutates_names(self) -> set[str]:
+        """Names of tools whose success guarantees a file was actually
+        written (see Tool.always_mutates) -- used by
+        agent_controller/loop.py to decide whether a success should
+        invalidate every other cached tool result.
+        """
+        return {tool.name for tool in self._tools.values() if tool.always_mutates}
+
     def report(self, message: str) -> None:
         """Expose the same human-facing reporter used for tool progress
         messages (see Tool.progress_message()), so agent_controller/loop.py
@@ -68,8 +76,14 @@ class ToolRegistry:
 
         if tool.requires_confirmation:
             description = tool.confirmation_message(arguments)
-            if not self._confirm(description):
-                raise ToolCallDeniedError(f"User declined to run '{name}' with {arguments}")
+            approval = self._confirm(description)
+            # approval is bool | str (see tools/confirmation.py) -- must
+            # check "is not True" explicitly, not "not approval", since a
+            # non-empty feedback string is truthy and would otherwise be
+            # read as approval.
+            if approval is not True:
+                reason = f": {approval}" if isinstance(approval, str) else ""
+                raise ToolCallDeniedError(f"User declined to run '{name}' with {arguments}{reason}")
 
         if self._snapshots is not None:
             target = tool.target_path(arguments)

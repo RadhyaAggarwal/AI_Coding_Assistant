@@ -97,6 +97,12 @@ def test_requires_confirmation_flag_set(tmp_path):
     assert EditFileTool(tmp_path).requires_confirmation is True
 
 
+def test_always_mutates_flag_set(tmp_path):
+    """A successful run() always means a real write happened -- every
+    failure case raises EditFileError instead of returning."""
+    assert EditFileTool(tmp_path).always_mutates is True
+
+
 def test_target_path_resolves_within_root(tmp_path):
     tool = EditFileTool(tmp_path)
     resolved = tool.target_path({"path": "sample.py", "search": "x", "replace": "y"})

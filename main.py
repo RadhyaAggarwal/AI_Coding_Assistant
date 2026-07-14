@@ -12,6 +12,7 @@ import sys
 import time
 from pathlib import Path
 
+from agent_controller.change_summary import changed_files
 from agent_controller.conversation_store import load_conversation, save_conversation
 from agent_controller.loop import is_incomplete_answer, run
 from agent_controller.session_log import append_session, read_sessions
@@ -156,6 +157,15 @@ def main() -> None:
     save_conversation(state_dir, transcript, already_called)
     append_session(state_dir, user_request, answer, completed=not is_incomplete_answer(answer))
     print(answer)
+    # Mechanically derived from the transcript's own tool results, not
+    # the model's own account of what it did -- see
+    # agent_controller/change_summary.py for why the model's own
+    # narration isn't trusted for this specific claim.
+    changed = changed_files(transcript)
+    if changed:
+        print(f"\n(Files changed this conversation: {', '.join(changed)})")
+    else:
+        print("\n(No files were changed in this conversation.)")
     if is_incomplete_answer(answer):
         print("\n(Run again with --continue to keep going on this.)")
 

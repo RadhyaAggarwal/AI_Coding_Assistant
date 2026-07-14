@@ -629,6 +629,42 @@ def test_edit_file_keeps_no_dedup_exemption_after_a_seeded_success(tmp_path):
     assert any("duplicate" in message.lower() for message in reported)
 
 
+class RepeatsReadAfterAFailedCommandModel(ModelInterface):
+    """Reproduces the exact live bug: read a file, then run a command
+    that accomplishes nothing (a bad path/typo -- returns an error
+    *string*, never raises), then try the exact same read again. The
+    read must be caught as a duplicate -- the failed command shouldn't
+    have cleared anything, since nothing about it guarantees project
+    state actually changed."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        tool_messages = [m for m in messages if m.role == "tool"]
+        if len(tool_messages) == 0:
+            return ModelResponse(text=_call_text("read_file", {"path": "sample.txt"}))
+        if len(tool_messages) == 1:
+            return ModelResponse(
+                text=_call_text("run_command", {"command": "this-is-not-a-real-command"})
+            )
+        return ModelResponse(text=_call_text("read_file", {"path": "sample.txt"}))
+
+
+def test_a_failed_run_command_does_not_clear_other_tools_dedup_memory(tmp_path):
+    (tmp_path / "sample.txt").write_text("contents", encoding="utf-8")
+    reported = []
+    tools = ToolRegistry(confirm=lambda description: True, report=reported.append)
+    tools.register(ReadFileTool(tmp_path))
+    tools.register(RunCommandTool(tmp_path))
+    model = RepeatsReadAfterAFailedCommandModel()
+
+    run("Investigate sample.txt", model, tools)
+
+    assert any("duplicate" in message.lower() for message in reported)
+
+
 class RepeatsASeededCallModel(ModelInterface):
     """Always attempts the exact same read_file call -- the one already
     seeded into already_called, simulating a call made in a prior

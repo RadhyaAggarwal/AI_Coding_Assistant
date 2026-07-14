@@ -52,6 +52,25 @@ class Tool(ABC):
     # because the exact same command had already succeeded once.
     dedup_exempt: bool = False
 
+    # True if returning normally (no exception) from this tool GUARANTEES
+    # a file was actually written -- used by agent_controller/loop.py's
+    # duplicate-call guard to decide whether a success should invalidate
+    # every other cached tool result, on the theory that project state
+    # may have changed underneath them. True for edit_file/create_file,
+    # which never return without a real write having happened (every
+    # failure case raises instead). Deliberately NOT true for
+    # run_command, even though it also requires confirmation: a shell
+    # command can finish "successfully" (no Python exception) without
+    # having done anything at all -- a bad path, a typo, a syntax error
+    # all still just return a string describing the failure rather than
+    # raising. Live-observed: a run_command call that never actually
+    # executed anything (a malformed command) still cleared every other
+    # tool's cached result, letting the model re-burn real step budget
+    # re-doing lookups it already had answers to, for no reason -- the
+    # thing this whole guard exists to prevent, reintroduced through this
+    # one path. Defaults False; only edit_file/create_file set it True.
+    always_mutates: bool = False
+
     @abstractmethod
     def run(self, **kwargs: Any) -> str:
         """Execute the tool and return its result as a string."""
