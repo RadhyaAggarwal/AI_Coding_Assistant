@@ -141,6 +141,7 @@ def main() -> None:
         else:
             transcript, already_called = previous
 
+    turn_start = len(transcript)
     try:
         answer = run(
             user_request,
@@ -161,11 +162,29 @@ def main() -> None:
     # the model's own account of what it did -- see
     # agent_controller/change_summary.py for why the model's own
     # narration isn't trusted for this specific claim.
-    changed = changed_files(transcript)
-    if changed:
-        print(f"\n(Files changed this conversation: {', '.join(changed)})")
+    #
+    # Two scopes, not one: "this response" answers "does what I was just
+    # told match what actually just happened" -- the immediate
+    # verification question, right where a claim could be wrong. "this
+    # conversation so far" answers a different question -- how much has
+    # changed across a whole --continue chain, which can run several
+    # turns and otherwise be easy to lose track of. Live-observed gap in
+    # the single-scope version: reading a cumulative summary right after
+    # a turn that changed nothing looked like it was reporting on that
+    # turn specifically, when the files it named were actually from
+    # several turns earlier. The second line only prints when it would
+    # actually add something beyond the first -- for an ordinary,
+    # non-continued request the two are always identical by
+    # construction (turn_start is 0), so it never shows redundantly in
+    # the common case.
+    this_turn_changed = changed_files(transcript[turn_start:])
+    all_changed = changed_files(transcript)
+    if this_turn_changed:
+        print(f"\n(Files changed in this response: {', '.join(this_turn_changed)})")
     else:
-        print("\n(No files were changed in this conversation.)")
+        print("\n(No files were changed in this response.)")
+    if all_changed != this_turn_changed:
+        print(f"(Files changed across this conversation so far: {', '.join(all_changed)})")
     if is_incomplete_answer(answer):
         print("\n(Run again with --continue to keep going on this.)")
 
