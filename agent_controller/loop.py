@@ -145,7 +145,13 @@ from pathlib import Path
 from agent_controller.context_budget import cap_observation, trim_to_budget
 from agent_controller.request_coverage import find_unaddressed_part
 from agent_controller.tool_router import route_tools
-from model_interface.base import Message, ModelInterface, ModelResponse, ToolCall
+from model_interface.base import (
+    Message,
+    ModelInterface,
+    ModelResponse,
+    ModelUnavailableError,
+    ToolCall,
+)
 from model_interface.tool_call_parsing import extract_tool_calls, mentions_tool_call_attempt
 from tools.registry import ToolRegistry
 
@@ -158,6 +164,8 @@ _DEFAULT_CONTEXT_WINDOW_TOKENS = 8192
 # final answer attempt all count as steps). Each step is ~50-240s on this
 # machine's CPU-only inference, so this is a real latency tradeoff, not a
 # free increase — raise further only if a realistic task still runs out.
+# Conservative default so existing callers (tests) don't need to pass this;
+# main.py passes the real value from config.yaml (agent.max_steps).
 _MAX_STEPS = 6
 # Observed live: a request that made a correct fix, verified via two real
 # tool calls, still exhausted the whole step budget -- the progress
@@ -256,6 +264,7 @@ def run(
     context_window_tokens: int = _DEFAULT_CONTEXT_WINDOW_TOKENS,
     transcript: list[Message] | None = None,
     already_called: set[tuple[str, str]] | None = None,
+    max_steps: int = _MAX_STEPS,
 ) -> str:
     """Run one request through the agent loop and return its final answer.
 
@@ -297,13 +306,29 @@ def run(
     wasted_steps_used = 0
     gave_up_on_repetition = False
 
-    while real_steps_used < _MAX_STEPS and wasted_steps_used < _MAX_WASTED_STEPS:
+    def _generate(sendable, **kwargs):
+        # A ModelUnavailableError here would otherwise propagate straight
+        # out of run() with transcript/already_called never synced --
+        # main.py's caller would then have nothing to save, leaving
+        # whatever conversation was last written to disk (possibly a
+        # completely different, already-finished one) as the stale thing
+        # --continue resumes next. Sync what we have -- even just the
+        # pending user turn, if this is the very first call -- so the
+        # failed attempt itself is what gets persisted and retried.
+        try:
+            return model.generate(sendable, **kwargs)
+        except ModelUnavailableError:
+            _sync_transcript(transcript, messages)
+            _sync_already_called(already_called, call_history)
+            raise
+
+    while real_steps_used < max_steps and wasted_steps_used < _MAX_WASTED_STEPS:
         sendable = trim_to_budget(messages, context_window_tokens)
         query_text = " ".join(m.content for m in sendable if m.role != "system")
         is_first_step = real_steps_used == 0 and wasted_steps_used == 0
         step_keep_names = always_keep_names | _ORIENTATION_TOOL_NAMES if is_first_step else always_keep_names
         offered_tools = route_tools(query_text, tools.schemas(), always_keep_names=step_keep_names)
-        response = model.generate(sendable, tools=offered_tools)
+        response = _generate(sendable, tools=offered_tools)
         calls = _resolve_tool_calls(response, known_tool_names)
 
         if not calls:
@@ -326,7 +351,13 @@ def run(
                 )
                 continue
             if not coverage_nudge_used:
-                unaddressed = find_unaddressed_part(user_request, response.text, model)
+                try:
+                    unaddressed = find_unaddressed_part(user_request, response.text, model)
+                except ModelUnavailableError:
+                    messages.append(Message(role="assistant", content=response.text))
+                    _sync_transcript(transcript, messages)
+                    _sync_already_called(already_called, call_history)
+                    raise
                 if unaddressed is not None:
                     coverage_nudge_used = True
                     messages.append(Message(role="assistant", content=response.text))
@@ -468,7 +499,7 @@ def run(
     # the question" -- not a new, less-reliable summarization path).
     # Only if it *still* can't produce real prose after being told
     # directly is this a genuine, unrecoverable give-up.
-    final_response = model.generate(trim_to_budget(messages, context_window_tokens))
+    final_response = _generate(trim_to_budget(messages, context_window_tokens))
     if final_response.tool_calls or mentions_tool_call_attempt(final_response.text):
         messages.append(Message(role="assistant", content=final_response.text))
         messages.append(
@@ -483,7 +514,7 @@ def run(
                 ),
             )
         )
-        final_response = model.generate(trim_to_budget(messages, context_window_tokens))
+        final_response = _generate(trim_to_budget(messages, context_window_tokens))
         if final_response.tool_calls or mentions_tool_call_attempt(final_response.text):
             if gave_up_on_repetition:
                 final_text = (
@@ -491,7 +522,7 @@ def run(
                     "already-answered tool calls without making progress."
                 )
             else:
-                final_text = f"{_INCOMPLETE_ANSWER_PREFIX} within {_MAX_STEPS} steps."
+                final_text = f"{_INCOMPLETE_ANSWER_PREFIX} within {max_steps} steps."
             messages.append(Message(role="assistant", content=final_text))
             _sync_transcript(transcript, messages)
             _sync_already_called(already_called, call_history)

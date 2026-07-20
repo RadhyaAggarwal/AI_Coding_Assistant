@@ -14,7 +14,13 @@ Two independent safeguards:
     enters the conversation, regardless of whether that tool already
     self-limits (some do — search_code, run_command, find_symbol; some
     don't — read_file has no cap of its own). This is a backstop, not a
-    replacement for per-tool limits.
+    replacement for per-tool limits. Keeps both the head and the tail of
+    a truncated observation, not just the head -- live-observed with a
+    real run_command traceback: a Python exception's type and message
+    are always the last line, so head-only truncation silently discarded
+    exactly the one line that would have let the model diagnose a real
+    NameError, leaving it with nothing to go on but plausible-looking
+    upper stack frames.
   - trim_to_budget(): drops the oldest messages once the running total
     risks exceeding the model's context window, keeping the system
     prompt and the original first user message pinned, and never
@@ -39,6 +45,12 @@ from model_interface.base import Message
 
 _CHARS_PER_TOKEN_ESTIMATE = 4
 _MAX_OBSERVATION_CHARS = 4000
+# Head keeps the larger share since it usually holds real context too
+# (the command that ran, a file's opening content) -- tail exists
+# specifically so a truncated traceback still ends in its actual
+# exception type + message instead of just trailing off mid-stack-frame.
+_HEAD_CHARS = 2500
+_TAIL_CHARS = 1500
 _RESPONSE_HEADROOM_TOKENS = 1000  # leave room for the model's own reply
 
 
@@ -49,7 +61,8 @@ def estimate_tokens(text: str) -> int:
 def cap_observation(text: str) -> str:
     if len(text) <= _MAX_OBSERVATION_CHARS:
         return text
-    return text[:_MAX_OBSERVATION_CHARS] + "\n... (truncated)"
+    omitted = len(text) - _HEAD_CHARS - _TAIL_CHARS
+    return f"{text[:_HEAD_CHARS]}\n... (truncated, {omitted} chars omitted) ...\n{text[-_TAIL_CHARS:]}"
 
 
 def trim_to_budget(messages: list[Message], context_window_tokens: int) -> list[Message]:

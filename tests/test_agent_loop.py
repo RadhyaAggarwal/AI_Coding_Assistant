@@ -9,7 +9,7 @@ conversation is a proper role-separated history, not a flattened string.
 """
 import json
 
-from model_interface.base import Message, ModelInterface, ModelResponse
+from model_interface.base import Message, ModelInterface, ModelResponse, ModelUnavailableError
 from tools.create_file import CreateFileTool
 from tools.edit_file import EditFileTool
 from tools.list_directory import ListDirectoryTool
@@ -277,6 +277,108 @@ def test_transcript_with_prior_history_is_used_as_the_starting_point(tmp_path):
     assert [m.content for m in transcript] == [
         "SYS PROMPT", "first question", "first answer", "second question", "SECOND ANSWER",
     ]
+
+
+class UnavailableOnFirstCallModel(ModelInterface):
+    """Raises ModelUnavailableError on the very first generate() call --
+    reproduces the original --continue-after-failure bug, where nothing
+    had been synced to transcript yet when the exception propagated."""
+
+    def generate(self, messages, tools=None):
+        raise ModelUnavailableError("simulated timeout")
+
+
+def test_transcript_synced_before_propagating_model_unavailable_on_first_call(tmp_path):
+    tools = ToolRegistry()
+    model = UnavailableOnFirstCallModel()
+    transcript: list[Message] = []
+    already_called: set[tuple[str, str]] = set()
+
+    try:
+        run("fix the bug", model, tools, transcript=transcript, already_called=already_called)
+        assert False, "expected ModelUnavailableError to propagate"
+    except ModelUnavailableError:
+        pass
+
+    # the pending, unanswered request is what got saved -- not left empty
+    # -- so a later --continue resumes the actual failed attempt instead
+    # of falling back to whatever unrelated conversation was saved before.
+    assert [m.role for m in transcript] == ["system", "user"]
+    assert transcript[-1].content == "fix the bug"
+
+
+class UnavailableAfterOneToolCallModel(ModelInterface):
+    """Succeeds on step one (a real tool call), then fails on step two --
+    verifies real progress made before the failure is preserved, not just
+    the original request."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def generate(self, messages, tools=None):
+        self.calls += 1
+        if self.calls == 1:
+            return ModelResponse(text=_call_text("list_directory", {"path": "."}))
+        raise ModelUnavailableError("simulated timeout")
+
+
+def test_transcript_synced_before_propagating_model_unavailable_after_a_tool_call(tmp_path):
+    tools = ToolRegistry()
+    tools.register(ListDirectoryTool(tmp_path))
+    model = UnavailableAfterOneToolCallModel()
+    transcript: list[Message] = []
+    already_called: set[tuple[str, str]] = set()
+
+    try:
+        run("look around then explain", model, tools, transcript=transcript, already_called=already_called)
+        assert False, "expected ModelUnavailableError to propagate"
+    except ModelUnavailableError:
+        pass
+
+    assert [m.role for m in transcript] == ["system", "user", "assistant", "tool"]
+    # the real tool call that already succeeded is remembered too, so a
+    # resumed --continue won't redundantly repeat it.
+    assert already_called == {("list_directory", json.dumps({"path": "."}))}
+
+
+class UnavailableOnCoverageCheckModel(ModelInterface):
+    """Answers in plain text (no tool call) to a compound request, then
+    raises ModelUnavailableError on the follow-up coverage-check call
+    (agent_controller/request_coverage.py's own model.generate) -- a
+    second, separate call site that also needs to sync before raising."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def generate(self, messages, tools=None):
+        self.calls += 1
+        if self.calls == 1:
+            return ModelResponse(text="Here is part of the answer.")
+        raise ModelUnavailableError("simulated timeout")
+
+
+def test_transcript_synced_before_propagating_model_unavailable_from_coverage_check(tmp_path):
+    tools = ToolRegistry()
+    model = UnavailableOnCoverageCheckModel()
+    transcript: list[Message] = []
+
+    try:
+        run(
+            "Which files import repo_index.indexer, and where is the function "
+            "cap_observation actually called?",
+            model,
+            tools,
+            transcript=transcript,
+        )
+        assert False, "expected ModelUnavailableError to propagate"
+    except ModelUnavailableError:
+        pass
+
+    # the model's real (if incomplete) answer is preserved, not discarded,
+    # even though the coverage check that would have nudged it never
+    # got to finish.
+    assert [m.role for m in transcript] == ["system", "user", "assistant"]
+    assert transcript[-1].content == "Here is part of the answer."
 
 
 class MultiStepModel(ModelInterface):

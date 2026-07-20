@@ -150,9 +150,14 @@ def main() -> None:
             config["model"]["context_window_tokens"],
             transcript=transcript,
             already_called=already_called,
+            max_steps=config["agent"]["max_steps"],
         )
     except ModelUnavailableError as exc:
         print(f"Model unavailable: {exc}")
+        # run() syncs transcript/already_called in place before raising,
+        # so this failed attempt -- not whatever was last saved on a
+        # prior successful run -- is what --continue resumes next.
+        save_conversation(state_dir, transcript, already_called)
         return
 
     save_conversation(state_dir, transcript, already_called)

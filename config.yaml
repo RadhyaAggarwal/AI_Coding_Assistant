@@ -7,11 +7,13 @@ model:
   # Base URL of the local Ollama server (or any OpenAI/Ollama-compatible
   # inference server). The Model Interface layer talks to this endpoint
   # over HTTP — it does not care where the model process physically runs.
-  endpoint_url: "http://localhost:11434"
+  # endpoint_url: "http://localhost:11434"
+  endpoint_url: "https://headpiece-steed-residual.ngrok-free.dev"
 
   # Name of the model to request from the inference server, as registered
   # with `ollama pull <name>` / `ollama list`.
-  name: "qwen2.5-coder:7b"
+  # name: "qwen2.5-coder:7b"
+  name: "qwen2.5-coder:14b"
 
   # Generation request timeout, in seconds. Needs headroom for CPU-only
   # inference — grows with the number of registered tools, since the full
@@ -49,6 +51,17 @@ project:
   # access is validated against this path so the agent can't read or
   # write outside of it.
   root_path: "."
+
+agent:
+  # Hard cap on how many real (non-duplicate) tool-call steps a single
+  # request may take before the loop gives up and asks the model to
+  # synthesize a partial answer from whatever it gathered instead (see
+  # agent_controller/loop.py's run()). Each step is a full model call
+  # (~50-240s on CPU-only inference), so raising this is a real
+  # latency/cost tradeoff, not a free increase -- bump it only once a
+  # realistic task has actually run out of room (a single-file bug fix
+  # needs far fewer distinct steps than a multi-file scaffold).
+  max_steps: 15
 
 execution:
   # Max seconds a run_command tool call may run before being killed.

@@ -29,8 +29,6 @@ from typing import Any
 
 from tools.base import Tool
 
-_MAX_OUTPUT_CHARS = 4000
-
 _DANGEROUS_COMMAND_WARNINGS: list[tuple[re.Pattern, str]] = [
     (
         re.compile(r"\bgit\s+push\b", re.IGNORECASE),
@@ -124,10 +122,13 @@ class RunCommandTool(Tool):
         except subprocess.TimeoutExpired:
             return f"Command timed out after {self._timeout_seconds}s: {command}"
 
+        # Deliberately not truncated here -- agent_controller/context_budget.py's
+        # cap_observation() is the one place that policy should live (see its
+        # docstring for why a second, separately-drifting copy caused a real,
+        # live-observed bug: this tool's own head-only cap discarded a
+        # traceback's actual exception line before cap_observation's
+        # head+tail fix ever got a chance to run).
         output = (result.stdout + result.stderr).strip()
-        if len(output) > _MAX_OUTPUT_CHARS:
-            output = output[:_MAX_OUTPUT_CHARS] + "\n... (truncated)"
-
         if output:
             return f"Exit code: {result.returncode}\n{output}"
         return f"Exit code: {result.returncode} (no output)"

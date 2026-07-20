@@ -20,8 +20,24 @@ def test_cap_observation_truncates_long_text():
     text = "x" * 5000
     result = cap_observation(text)
     assert len(result) < len(text)
-    assert result.endswith("... (truncated)")
-    assert result.startswith("x" * 4000)
+    assert result.startswith("x" * 2500)
+    assert result.endswith("x" * 1500)
+    assert "1000 chars omitted" in result
+
+
+def test_cap_observation_preserves_the_tail_not_just_the_head():
+    """Reproduces a real live-found bug: a Python traceback's exception
+    type and message are always the last line -- head-only truncation
+    silently discarded exactly that for a run_command traceback over the
+    cap, leaving the model with plausible-looking upper stack frames and
+    no way to see the actual NameError. The tail must survive."""
+    traceback_text = (
+        "Traceback (most recent call last):\n"
+        + "  File \"module.py\", line 1, in <module>\n" * 300
+        + "NameError: name 'include' is not defined"
+    )
+    result = cap_observation(traceback_text)
+    assert result.endswith("NameError: name 'include' is not defined")
 
 
 def test_trim_to_budget_returns_unchanged_when_within_budget():
