@@ -23,6 +23,21 @@ clear-on-confirmation-gated-success rule (see loop.py's run() docstring)
 in a second, easy-to-drift-out-of-sync place; persisting the exact set
 run() already maintains avoids that.
 
+call_results is already_called's companion, for the same reason: the
+real result (or real failure reason) each already-tried call actually
+produced, so a duplicate rejection on a later --continue turn can hand
+that back to the model instead of just telling it "use the observation
+you already have" -- live-observed not to be enough on its own, since
+the model doesn't reliably find/trust an older tool result over its own
+more recent narration in a long transcript. Unlike a missing
+already_called key (treated as "nothing to continue" below, since
+silently losing dedup memory is a real correctness risk), a missing
+call_results key degrades gracefully to an empty dict instead -- losing
+it only means a duplicate rejection falls back to the old generic
+wording, not a wrong or unsafe outcome, so there's no reason to also
+discard an otherwise-perfectly-loadable saved conversation over it (e.g.
+one saved before this feature existed).
+
 Only ever holds the single most recent conversation -- there is no
 multi-session management here, by design, to keep this a minimal, well-
 understood MVP rather than a bigger subsystem nobody asked for yet.
@@ -39,19 +54,23 @@ def save_conversation(
     state_dir: Path,
     messages: list[Message],
     already_called: set[tuple[str, str]] = frozenset(),
+    call_results: dict[tuple[str, str], str] | None = None,
 ) -> None:
     state_dir.mkdir(parents=True, exist_ok=True)
     path = state_dir / _FILENAME
     payload = {
         "messages": [{"role": m.role, "content": m.content} for m in messages],
         "already_called": [[name, args_json] for name, args_json in already_called],
+        "call_results": [
+            [name, args_json, result] for (name, args_json), result in (call_results or {}).items()
+        ],
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def load_conversation(
     state_dir: Path,
-) -> tuple[list[Message], set[tuple[str, str]]] | None:
+) -> tuple[list[Message], set[tuple[str, str]], dict[tuple[str, str], str]] | None:
     """Returns None if there's nothing to continue -- no prior
     conversation was ever saved, or the saved file is unreadable/corrupt/
     an older pre-already_called format (all treated the same as "nothing
@@ -64,6 +83,9 @@ def load_conversation(
         payload = json.loads(path.read_text(encoding="utf-8"))
         messages = [Message(role=item["role"], content=item["content"]) for item in payload["messages"]]
         already_called = {tuple(pair) for pair in payload["already_called"]}
-        return messages, already_called
-    except (json.JSONDecodeError, OSError, KeyError, TypeError):
+        call_results = {
+            (name, args_json): result for name, args_json, result in payload.get("call_results", [])
+        }
+        return messages, already_called, call_results
+    except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError):
         return None

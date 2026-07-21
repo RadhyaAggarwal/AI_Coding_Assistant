@@ -134,12 +134,13 @@ def main() -> None:
 
     transcript: list[Message] = []
     already_called: set[tuple[str, str]] = set()
+    call_results: dict[tuple[str, str], str] = {}
     if continue_previous:
         previous = load_conversation(state_dir)
         if previous is None:
             print("No previous conversation to continue -- starting fresh.")
         else:
-            transcript, already_called = previous
+            transcript, already_called, call_results = previous
 
     turn_start = len(transcript)
     try:
@@ -151,16 +152,18 @@ def main() -> None:
             transcript=transcript,
             already_called=already_called,
             max_steps=config["agent"]["max_steps"],
+            call_results=call_results,
         )
     except ModelUnavailableError as exc:
         print(f"Model unavailable: {exc}")
-        # run() syncs transcript/already_called in place before raising,
-        # so this failed attempt -- not whatever was last saved on a
-        # prior successful run -- is what --continue resumes next.
-        save_conversation(state_dir, transcript, already_called)
+        # run() syncs transcript/already_called/call_results in place
+        # before raising, so this failed attempt -- not whatever was last
+        # saved on a prior successful run -- is what --continue resumes
+        # next.
+        save_conversation(state_dir, transcript, already_called, call_results)
         return
 
-    save_conversation(state_dir, transcript, already_called)
+    save_conversation(state_dir, transcript, already_called, call_results)
     append_session(state_dir, user_request, answer, completed=not is_incomplete_answer(answer))
     print(answer)
     # Mechanically derived from the transcript's own tool results, not

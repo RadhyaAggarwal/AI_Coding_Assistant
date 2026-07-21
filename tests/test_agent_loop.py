@@ -573,6 +573,42 @@ def test_dedups_an_identical_call_even_when_it_fails(tmp_path):
     assert len(model.calls) == 1 + _MAX_WASTED_STEPS + 2
 
 
+def test_duplicate_rejection_includes_the_real_cached_result(tmp_path):
+    """A deduped repeat must hand the model back the real content the
+    first call actually returned, not just tell it "use the observation
+    you already have" -- live-observed that phrasing alone isn't enough,
+    see the loop.py comment at the dedup-rejection site."""
+    (tmp_path / "sample.txt").write_text("sample contents", encoding="utf-8")
+    tools = ToolRegistry()
+    tools.register(ReadFileTool(tmp_path))
+    model = RepeatsCallModel()
+
+    run("Summarize sample.txt", model, tools)
+
+    third_call_messages = model.calls[2]
+    rejection = third_call_messages[-1]
+    assert rejection.role == "tool"
+    assert "sample contents" in rejection.content
+
+
+def test_duplicate_rejection_of_a_failed_call_includes_the_real_error(tmp_path):
+    """The same guarantee as above, for a call that fails identically
+    every time (edit_file's search text never matching) rather than one
+    that succeeds -- the real error message should carry over too, not
+    just the fact that it was already tried."""
+    (tmp_path / "sample.txt").write_text("sample contents", encoding="utf-8")
+    tools = ToolRegistry(confirm=lambda description: True)
+    tools.register(EditFileTool(tmp_path))
+    model = RepeatsFailingEditModel()
+
+    run("Fix sample.txt", model, tools)
+
+    third_call_messages = model.calls[2]
+    rejection = third_call_messages[-1]
+    assert rejection.role == "tool"
+    assert "'search' text was not found" in rejection.content
+
+
 class RerunsVerificationAfterFixModel(ModelInterface):
     """Reproduces the exact live failure: run a command, fix a bug via
     edit_file, then try to re-run the *same* command to verify the fix.
@@ -811,6 +847,105 @@ def test_already_called_is_synced_back_to_the_caller_after_run(tmp_path):
         ("search_code", json.dumps({"query": "login"}, sort_keys=True)),
         ("read_file", json.dumps({"path": "auth.py"}, sort_keys=True)),
     }
+
+
+def test_seeded_call_results_surfaces_real_content_from_a_prior_turn(tmp_path):
+    """Reproduces the actual live bug this feature fixes: a real read
+    that succeeded in an earlier --continue turn (seeded here the same
+    way already_called itself gets seeded) must be handed back verbatim
+    on a later duplicate, not just referenced. Without call_results, this
+    is exactly the scenario where an explicit human "re-read this file,
+    don't trust what you said earlier" instruction couldn't get through."""
+    (tmp_path / "sample.txt").write_text("the real file content", encoding="utf-8")
+    tools = ToolRegistry()
+    tools.register(ReadFileTool(tmp_path))
+    model = RepeatsASeededCallModel()
+    key = ("read_file", json.dumps({"path": "sample.txt"}, sort_keys=True))
+    seeded_already_called = {key}
+    seeded_call_results = {key: "the real file content"}
+
+    run(
+        "Look at sample.txt again",
+        model,
+        tools,
+        already_called=seeded_already_called,
+        call_results=seeded_call_results,
+    )
+
+    second_call_messages = model.calls[1]
+    rejection = second_call_messages[-1]
+    assert rejection.role == "tool"
+    assert "the real file content" in rejection.content
+
+
+def test_call_results_is_synced_back_to_the_caller_after_run(tmp_path):
+    """Mirrors test_already_called_is_synced_back_to_the_caller_after_run
+    -- same in-place-mutation contract, so main.py can persist it and
+    pass it back into the next --continue call alongside already_called."""
+    (tmp_path / "auth.py").write_text("def login():\n    pass\n", encoding="utf-8")
+    tools = ToolRegistry()
+    tools.register(SearchCodeTool(tmp_path))
+    tools.register(ReadFileTool(tmp_path))
+    model = MultiStepModel()
+    call_results: dict[tuple[str, str], str] = {}
+
+    run("Find the login function and explain it", model, tools, call_results=call_results)
+
+    assert call_results[("read_file", json.dumps({"path": "auth.py"}, sort_keys=True))] == (
+        "def login():\n    pass\n"
+    )
+
+
+def test_call_results_cleared_when_a_mutating_call_succeeds(tmp_path):
+    """The cached-result companion to test_seeded_already_called_does_not_
+    block_a_rerun_after_a_fresh_edit -- a stale cached read from before a
+    successful edit_file/create_file call must not survive it, since
+    project state may have changed underneath it. Shares call_history's
+    exact clear() so this can't silently drift out of sync with it."""
+    (tmp_path / "sample.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    tools = ToolRegistry(confirm=lambda description: True)
+    tools.register(ReadFileTool(tmp_path))
+    tools.register(EditFileTool(tmp_path))
+    model = RerunsVerificationAfterFixReadModel()
+    stale_key = ("read_file", json.dumps({"path": "sample.py"}, sort_keys=True))
+    already_called: set[tuple[str, str]] = {stale_key}
+    call_results: dict[tuple[str, str], str] = {stale_key: "def f():\n    return 1\n"}
+
+    run(
+        "Fix the bug in sample.py and confirm by reading it again",
+        model,
+        tools,
+        already_called=already_called,
+        call_results=call_results,
+    )
+
+    # the model re-reads the file after fixing it (same key as the stale
+    # seed, since the arguments are identical), so the cache ends up
+    # holding that key again -- but the clear must have genuinely
+    # happened in between, or this would still hold the stale pre-edit
+    # content instead of being overwritten with the real post-edit read.
+    assert call_results[stale_key] == "def f():\n    return 2\n"
+
+
+class RerunsVerificationAfterFixReadModel(ModelInterface):
+    """Like RerunsVerificationAfterFixModel, but re-verifies with
+    read_file (not dedup_exempt) instead of run_command (which is
+    dedup_exempt and so wouldn't actually exercise the always_mutates
+    clearing path this test targets)."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        tool_messages = [m for m in messages if m.role == "tool"]
+        if len(tool_messages) == 0:
+            return ModelResponse(
+                text=_call_text("edit_file", {"path": "sample.py", "search": "return 1", "replace": "return 2"})
+            )
+        if len(tool_messages) == 1:
+            return ModelResponse(text=_call_text("read_file", {"path": "sample.py"}))
+        return ModelResponse(text="Verified the fix.")
 
 
 class EditVerifyFixVerifyModel(ModelInterface):

@@ -257,6 +257,14 @@ def _sync_already_called(
         already_called.update(call_history)
 
 
+def _sync_call_results(
+    call_results_out: dict[tuple[str, str], str] | None, call_results: dict[tuple[str, str], str]
+) -> None:
+    if call_results_out is not None:
+        call_results_out.clear()
+        call_results_out.update(call_results)
+
+
 def run(
     user_request: str,
     model: ModelInterface,
@@ -265,6 +273,7 @@ def run(
     transcript: list[Message] | None = None,
     already_called: set[tuple[str, str]] | None = None,
     max_steps: int = _MAX_STEPS,
+    call_results: dict[tuple[str, str], str] | None = None,
 ) -> str:
     """Run one request through the agent loop and return its final answer.
 
@@ -288,6 +297,20 @@ def run(
     and its clear-on-confirmation-gated-success rule in a second place;
     persisting the exact set this function already maintains keeps there
     being exactly one place that rule lives.
+
+    call_results is already_called's companion: the real result (or
+    failure reason) each already-tried call actually produced, keyed the
+    same way, so a duplicate rejection can hand the model that real
+    content back instead of just telling it "use the observation you
+    already have" and trusting it to correctly find and weight an older
+    tool message over its own more recent (possibly wrong) narration --
+    live-observed not to work across a --continue chain, which is why
+    this persists the same way already_called does rather than staying
+    scoped to one run() call. Deliberately a separate dict rather than
+    reconstructed from transcript, for the same reason already_called
+    isn't: this function already has the exact real value at the moment
+    a call succeeds or fails, and persisting that avoids a second,
+    easy-to-drift-out-of-sync way of deriving it.
     """
     if transcript:
         messages = list(transcript) + [Message(role="user", content=user_request)]
@@ -301,6 +324,7 @@ def run(
     dedup_exempt_names = frozenset(tools.dedup_exempt_names())
     always_mutates_names = frozenset(tools.always_mutates_names())
     call_history: set[tuple[str, str]] = set(already_called) if already_called else set()
+    result_cache: dict[tuple[str, str], str] = dict(call_results) if call_results else {}
     coverage_nudge_used = False
     real_steps_used = 0
     wasted_steps_used = 0
@@ -320,6 +344,7 @@ def run(
         except ModelUnavailableError:
             _sync_transcript(transcript, messages)
             _sync_already_called(already_called, call_history)
+            _sync_call_results(call_results, result_cache)
             raise
 
     while real_steps_used < max_steps and wasted_steps_used < _MAX_WASTED_STEPS:
@@ -357,6 +382,7 @@ def run(
                     messages.append(Message(role="assistant", content=response.text))
                     _sync_transcript(transcript, messages)
                     _sync_already_called(already_called, call_history)
+                    _sync_call_results(call_results, result_cache)
                     raise
                 if unaddressed is not None:
                     coverage_nudge_used = True
@@ -375,6 +401,7 @@ def run(
             messages.append(Message(role="assistant", content=response.text))
             _sync_transcript(transcript, messages)
             _sync_already_called(already_called, call_history)
+            _sync_call_results(call_results, result_cache)
             return response.text
 
         messages.append(
@@ -388,16 +415,31 @@ def run(
                     f"Skipping duplicate call to '{call.name}' -- already ran "
                     "with these exact arguments."
                 )
-                messages.append(
-                    Message(
-                        role="tool",
-                        content=(
-                            "You already called this exact tool with these exact "
-                            "arguments. Use the observation you already have to "
-                            "answer, or call a different tool."
-                        ),
+                # Hand back the real result (or real failure reason) this
+                # exact call already produced, instead of just telling the
+                # model to "use the observation you already have" -- live-
+                # observed that phrasing isn't enough: given an explicit
+                # human instruction to re-verify, the model still trusted
+                # its own more recent (fabricated) narration over a real,
+                # correct tool result sitting earlier in a long --continue
+                # chain, because it was never shown that result again, only
+                # told it existed. Falls back to the old generic wording if
+                # this specific key somehow has no cached result (shouldn't
+                # normally happen now that both the success and failure
+                # paths below always cache, but stays safe if it does).
+                cached = result_cache.get(_call_key(call))
+                if cached is not None:
+                    content = (
+                        "You already called this exact tool with these exact "
+                        f"arguments. Here is that real result again:\n{cached}"
                     )
-                )
+                else:
+                    content = (
+                        "You already called this exact tool with these exact "
+                        "arguments. Use the observation you already have to "
+                        "answer, or call a different tool."
+                    )
+                messages.append(Message(role="tool", content=content))
                 continue
 
             made_progress = True
@@ -417,6 +459,7 @@ def run(
                 # one. An identical retry now correctly lands in the
                 # cheap, capped wasted-turn path instead.
                 call_history.add(_call_key(call))
+                result_cache[_call_key(call)] = f"Error: {exc}."
                 # Deliberately does NOT say anything like "or answer
                 # directly if you can't" -- live-observed, that phrasing
                 # directly contradicted the system prompt's "don't ask
@@ -470,8 +513,11 @@ def run(
                 # answers to, for no reason -- the exact thing this guard
                 # exists to prevent, reintroduced through this one path.
                 call_history.clear()
+                result_cache.clear()
             call_history.add(_call_key(call))
-            messages.append(Message(role="tool", content=cap_observation(observation)))
+            capped = cap_observation(observation)
+            result_cache[_call_key(call)] = capped
+            messages.append(Message(role="tool", content=capped))
 
         if made_progress:
             real_steps_used += 1
@@ -526,9 +572,11 @@ def run(
             messages.append(Message(role="assistant", content=final_text))
             _sync_transcript(transcript, messages)
             _sync_already_called(already_called, call_history)
+            _sync_call_results(call_results, result_cache)
             return final_text
 
     messages.append(Message(role="assistant", content=final_response.text))
     _sync_transcript(transcript, messages)
     _sync_already_called(already_called, call_history)
+    _sync_call_results(call_results, result_cache)
     return final_response.text
