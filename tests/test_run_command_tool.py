@@ -1,4 +1,67 @@
+import subprocess
+import sys
+import time
+
 from tools.run_command import RunCommandTool
+
+
+def _pid_is_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}"],
+            capture_output=True,
+            text=True,
+        )
+        return str(pid) in result.stdout
+    import os
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def test_timeout_kills_the_whole_process_tree_not_just_the_direct_child(tmp_path):
+    """Reproduces the real live bug, not just a superficial timeout check:
+    a command that spawns its own child process (exactly what Django's
+    runserver does via its auto-reloader) must not leave that child
+    running after the timeout -- twice observed live to leave the whole
+    harness stuck well past the configured timeout, needing a human to
+    manually find and kill orphaned processes. subprocess.run(timeout=N)
+    on Windows only ever guaranteed killing the immediate tracked child
+    (cmd.exe, under shell=True); this proves the real grandchild dies
+    too, not just that a timeout message gets returned."""
+    child_script = tmp_path / "child.py"
+    parent_script = tmp_path / "parent.py"
+    pid_file = tmp_path / "child_pid.txt"
+
+    child_script.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    parent_script.write_text(
+        "import subprocess, sys\n"
+        f"child = subprocess.Popen([sys.executable, {str(child_script)!r}])\n"
+        f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
+        "child.wait()\n",
+        encoding="utf-8",
+    )
+
+    tool = RunCommandTool(tmp_path, timeout_seconds=2)
+    result = tool.run(f'"{sys.executable}" "{parent_script}"')
+
+    assert "timed out" in result.lower()
+
+    deadline = time.time() + 5
+    while not pid_file.exists() and time.time() < deadline:
+        time.sleep(0.1)
+    assert pid_file.exists(), "child process never started -- test setup issue, not the fix"
+    child_pid = int(pid_file.read_text().strip())
+
+    assert not _pid_is_alive(child_pid), (
+        "the grandchild process is still running after timeout -- "
+        "only the direct child was killed, reproducing the original bug"
+    )
 
 
 def test_runs_command_and_captures_output(tmp_path):

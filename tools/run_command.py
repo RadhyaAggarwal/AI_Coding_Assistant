@@ -24,10 +24,51 @@ a human still chooses to approve.
 """
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 from tools.base import Tool
+
+
+def _kill_process_tree(process: "subprocess.Popen[str]") -> None:
+    """Kill process and every descendant it spawned, not just the one
+    handle subprocess itself tracks.
+
+    Live-observed gap: subprocess.run(..., timeout=N) on Windows only
+    guarantees killing the immediate child -- under shell=True that's
+    cmd.exe. A command that spawns its own child (Django's runserver
+    always does, via its auto-reloader) leaves that grandchild running
+    as an orphan after the configured timeout supposedly fires, holding
+    the port and sometimes the output pipes open -- twice observed live
+    to leave the whole harness process itself stuck well past the
+    configured timeout, requiring a human to manually find and kill the
+    stray processes. taskkill's /T flag kills a process and its full
+    descendant tree by walking Windows' own parent-child PID records, no
+    extra dependency needed. On POSIX, the equivalent is killing the
+    process group instead of just the one PID -- see start_new_session
+    in run() below, which is what makes that safe (without it, the
+    child's process group would be the same as this harness's own).
+    """
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+            capture_output=True,
+        )
+    else:
+        import os
+        import signal
+
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    # The tree is dead now, so this won't hang the way the original bug
+    # did -- reap the process so it doesn't linger as a zombie.
+    try:
+        process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
 
 _DANGEROUS_COMMAND_WARNINGS: list[tuple[re.Pattern, str]] = [
     (
@@ -110,16 +151,28 @@ class RunCommandTool(Tool):
         return f"Agent wants to run: {command}\n{warning_lines}"
 
     def run(self, command: str) -> str:
+        popen_kwargs: dict[str, Any] = {}
+        if sys.platform != "win32":
+            # Starts the child in its own process group/session, so
+            # _kill_process_tree's os.killpg() can safely target just this
+            # command's descendants on timeout -- without this, the
+            # child's process group would be the same as this harness's
+            # own, and killpg would kill us too.
+            popen_kwargs["start_new_session"] = True
+
+        process = subprocess.Popen(
+            command,
+            shell=True,
+            cwd=self._project_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            **popen_kwargs,
+        )
         try:
-            result = subprocess.run(
-                command,
-                shell=True,
-                cwd=self._project_root,
-                capture_output=True,
-                text=True,
-                timeout=self._timeout_seconds,
-            )
+            stdout, stderr = process.communicate(timeout=self._timeout_seconds)
         except subprocess.TimeoutExpired:
+            _kill_process_tree(process)
             return f"Command timed out after {self._timeout_seconds}s: {command}"
 
         # Deliberately not truncated here -- agent_controller/context_budget.py's
@@ -128,7 +181,7 @@ class RunCommandTool(Tool):
         # live-observed bug: this tool's own head-only cap discarded a
         # traceback's actual exception line before cap_observation's
         # head+tail fix ever got a chance to run).
-        output = (result.stdout + result.stderr).strip()
+        output = (stdout + stderr).strip()
         if output:
-            return f"Exit code: {result.returncode}\n{output}"
-        return f"Exit code: {result.returncode} (no output)"
+            return f"Exit code: {process.returncode}\n{output}"
+        return f"Exit code: {process.returncode} (no output)"
