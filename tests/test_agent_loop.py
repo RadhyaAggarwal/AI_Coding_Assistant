@@ -448,6 +448,43 @@ def test_refuses_identical_repeated_tool_call(tmp_path):
     assert "already called this exact tool" in third_call_messages[-1].content
 
 
+class RepeatsRunCommandBackToBackModel(ModelInterface):
+    """Proposes the exact same run_command call twice in a row with
+    nothing else happening in between -- reproduces the real live gap
+    where run_command's blanket dedup_exempt let this straight through
+    to a second full confirmation prompt for a command that had just
+    failed, with nothing having changed (scratch_cache.py's
+    temp_cache_test.py incident)."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        tool_messages = [m for m in messages if m.role == "tool"]
+        if len(tool_messages) < 2:
+            return ModelResponse(text=_call_text("run_command", {"command": "python nonexistent.py"}))
+        return ModelResponse(text="FINAL ANSWER")
+
+
+def test_run_command_back_to_back_identical_repeat_is_blocked(tmp_path):
+    """The redesigned dedup_exempt behavior: run_command is no longer
+    exempt from every duplicate check, only from the general call_history
+    one -- an exact repeat of the single most-recently-executed call,
+    with nothing else having happened in between, is still blocked."""
+    tools = ToolRegistry(confirm=lambda description: True)
+    tools.register(RunCommandTool(tmp_path))
+    model = RepeatsRunCommandBackToBackModel()
+
+    answer = run("Run the script", model, tools)
+
+    assert answer == "FINAL ANSWER"
+    third_call_messages = model.calls[2]
+    rejection = third_call_messages[-1]
+    assert rejection.role == "tool"
+    assert "already called this exact tool" in rejection.content
+
+
 class InterleavedDuplicatesModel(ModelInterface):
     """5 distinct real read_file calls, interleaved with 2 duplicate
     repeats of the very first one, then a final text answer -- 8 total

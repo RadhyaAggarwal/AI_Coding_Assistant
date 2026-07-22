@@ -325,6 +325,15 @@ def run(
     always_mutates_names = frozenset(tools.always_mutates_names())
     call_history: set[tuple[str, str]] = set(already_called) if already_called else set()
     result_cache: dict[tuple[str, str], str] = dict(call_results) if call_results else {}
+    # Scoped to this one run() call only, never persisted -- a dedup_exempt
+    # tool (currently only run_command) isn't checked against the general
+    # call_history at all, but is still blocked if it exactly repeats the
+    # single most-recently-executed call with nothing else having happened
+    # in between. Catches a mindless back-to-back repeat (e.g. retrying an
+    # identically-failing command) while still allowing a legitimate rerun
+    # the moment anything else occurs -- exactly the case the blanket
+    # exemption exists for (re-verifying a fix after a real edit).
+    last_executed_call: tuple[str, str] | None = None
     coverage_nudge_used = False
     real_steps_used = 0
     wasted_steps_used = 0
@@ -410,7 +419,12 @@ def run(
 
         made_progress = False
         for call in calls:
-            if call.name not in dedup_exempt_names and _call_key(call) in call_history:
+            is_blocked = (
+                _call_key(call) in call_history
+                if call.name not in dedup_exempt_names
+                else _call_key(call) == last_executed_call
+            )
+            if is_blocked:
                 tools.report(
                     f"Skipping duplicate call to '{call.name}' -- already ran "
                     "with these exact arguments."
@@ -443,6 +457,7 @@ def run(
                 continue
 
             made_progress = True
+            last_executed_call = _call_key(call)
             try:
                 observation = tools.execute(call.name, call.arguments)
             except Exception as exc:
