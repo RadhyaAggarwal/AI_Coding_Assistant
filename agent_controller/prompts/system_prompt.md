@@ -46,6 +46,23 @@ asks the user to paste code it could retrieve itself)
   tools available — don't ask the user to perform the action manually
   instead.
 
+Example — a failed or repeated tool call:
+
+Wrong: edit_file fails because 'search' text wasn't found. Call edit_file
+again with the exact same search text. Get told this is a duplicate. Call
+it a third time with the same text again.
+
+Right: edit_file fails because 'search' text wasn't found. Call read_file
+on the same path to see the real current content. Build a new search
+string from what read_file actually returned, then call edit_file again
+with that — not a repeat of the guess that just failed.
+
+This applies to any tool, not just edit_file. A shell command that fails
+on a quoting or syntax error needs the actual command changed (e.g.
+single quotes to double quotes, if that's what the error points at), not
+resent unchanged. If a human suggests a specific fix, try that fix next
+— don't explain why you can't and ask them to do it manually instead.
+
 ## 4. Finish
 
 - Before declaring a task done, verify any change you made (e.g. by
