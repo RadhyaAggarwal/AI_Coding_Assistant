@@ -381,6 +381,115 @@ def test_transcript_synced_before_propagating_model_unavailable_from_coverage_ch
     assert transcript[-1].content == "Here is part of the answer."
 
 
+class BatchesTwoMutatingEditsInOneTurnModel(ModelInterface):
+    """Plans two edit_file calls together as a single JSON array in one
+    turn -- reproduces the real live bug: a model batched four calls in
+    one turn (edit views.py, edit urls.py to reference what the first
+    edit was supposed to add, edit a template, run a check), all decided
+    before any of them had actually run. The first edit failed; the
+    second ran anyway, wiring a reference to something that was never
+    added -- exactly the broken state a real check later caught."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        tool_messages = [m for m in messages if m.role == "tool"]
+        if len(tool_messages) == 0:
+            return ModelResponse(
+                text=json.dumps(
+                    [
+                        {
+                            "name": "edit_file",
+                            "arguments": {"path": "a.py", "search": "x = 1", "replace": "x = 2"},
+                        },
+                        {
+                            "name": "edit_file",
+                            "arguments": {"path": "a.py", "search": "y = 1", "replace": "y = 2"},
+                        },
+                    ]
+                )
+            )
+        return ModelResponse(text="DONE")
+
+
+def test_batch_execution_stops_after_the_first_mutating_call(tmp_path):
+    (tmp_path / "a.py").write_text("x = 1\ny = 1\n", encoding="utf-8")
+    tools = ToolRegistry(confirm=lambda description: True)
+    tools.register(EditFileTool(tmp_path))
+    model = BatchesTwoMutatingEditsInOneTurnModel()
+
+    run("Update a.py", model, tools)
+
+    # only the first of the two batched edits actually ran -- the second
+    # must not execute blind to whether the first one succeeded
+    content = (tmp_path / "a.py").read_text(encoding="utf-8")
+    assert "x = 2" in content
+    assert "y = 1" in content
+
+    # proves the second call was never *executed* at all in that first
+    # turn (not just that its effect happened to not show up) -- the
+    # model's next turn only ever saw one tool result, not two
+    second_turn_messages = model.calls[1]
+    tool_messages_seen = [m for m in second_turn_messages if m.role == "tool"]
+    assert len(tool_messages_seen) == 1
+
+
+class BatchesFailingEditThenAnotherMutatingCallModel(ModelInterface):
+    """The exact real bug shape, not just the success-path variant above:
+    the first batched call *fails* (a wrong search string, same as the
+    real "# Add your views here." case), and a second, different
+    mutating call is queued right alongside it in the same turn --
+    reproduces core/urls.py getting wired to a function core/views.py
+    never actually gained, because the second edit ran regardless of the
+    first one's real, failed outcome."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        tool_messages = [m for m in messages if m.role == "tool"]
+        if len(tool_messages) == 0:
+            return ModelResponse(
+                text=json.dumps(
+                    [
+                        {
+                            "name": "edit_file",
+                            "arguments": {"path": "a.py", "search": "nonexistent text", "replace": "x = 2"},
+                        },
+                        {
+                            "name": "edit_file",
+                            "arguments": {"path": "b.py", "search": "y = 1", "replace": "y = 2"},
+                        },
+                    ]
+                )
+            )
+        return ModelResponse(text="DONE")
+
+
+def test_batch_execution_stops_after_a_mutating_call_fails(tmp_path):
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("y = 1\n", encoding="utf-8")
+    tools = ToolRegistry(confirm=lambda description: True)
+    tools.register(EditFileTool(tmp_path))
+    model = BatchesFailingEditThenAnotherMutatingCallModel()
+
+    run("Update both files", model, tools)
+
+    # a.py's edit failed (search text didn't exist there) -- b.py's edit,
+    # queued right alongside it in the same batch, must not have executed
+    # blind to that failure, the same way core/urls.py shouldn't have been
+    # wired to a function core/views.py never actually gained
+    assert (tmp_path / "b.py").read_text(encoding="utf-8") == "y = 1\n"
+
+    second_turn_messages = model.calls[1]
+    tool_messages_seen = [m for m in second_turn_messages if m.role == "tool"]
+    assert len(tool_messages_seen) == 1
+    assert "not found" in tool_messages_seen[0].content
+
+
 class MultiStepModel(ModelInterface):
     """Calls two different tools in sequence before answering — exercises
     the new multi-step chaining capability."""

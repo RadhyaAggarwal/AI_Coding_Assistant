@@ -502,6 +502,20 @@ def run(
                         ),
                     )
                 )
+                if call.name in always_mutates_names:
+                    # Stop processing the rest of this batch -- live-observed
+                    # a model plan four calls in one turn (edit views.py, edit
+                    # urls.py to reference what the first edit was supposed to
+                    # add, edit a template, then run a check), all decided
+                    # before any of them had actually run. The first edit
+                    # failed, but the second ran anyway, wiring a URL to a
+                    # function that was never added -- exactly the broken
+                    # state a real check later caught. Any remaining queued
+                    # call here was planned on the same blind premise; break
+                    # and let the model react to this real failure on a fresh
+                    # turn instead of ploughing through calls that may depend
+                    # on an assumption this failure just disproved.
+                    break
                 continue
 
             if call.name in always_mutates_names:
@@ -533,6 +547,16 @@ def run(
             capped = cap_observation(observation)
             result_cache[_call_key(call)] = capped
             messages.append(Message(role="tool", content=capped))
+            if call.name in always_mutates_names:
+                # Same reasoning as the failure-path break above, for the
+                # success case: a later call still queued in this same
+                # batch was planned before this mutation's real outcome was
+                # known at all, batching-blind to it either way -- even a
+                # successful edit may not be the one the next queued call
+                # assumed (a different file, a different shape). Break so
+                # the model reacts to what actually happened on a fresh
+                # turn rather than continuing a plan formed in the dark.
+                break
 
         if made_progress:
             real_steps_used += 1
