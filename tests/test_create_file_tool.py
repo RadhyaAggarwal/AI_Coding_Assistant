@@ -17,6 +17,24 @@ def test_creates_file_in_new_subdirectory(tmp_path):
     assert (tmp_path / "pkg" / "mod.py").read_text(encoding="utf-8") == "x = 1\n"
 
 
+def test_create_still_succeeds_when_content_uses_an_undefined_name(tmp_path):
+    """advisory_notes() is advisory, not blocking -- content using a name
+    never imported or defined must still be written, with a note
+    attached, not refused the way a real syntax error is."""
+    tool = CreateFileTool(tmp_path)
+    result = tool.run(path="new.py", content="def f():\n    return get_object_or_404(1)\n")
+    assert (tmp_path / "new.py").is_file()
+    assert "Created" in result
+    assert "get_object_or_404" in result
+    assert "Note:" in result
+
+
+def test_create_result_has_no_note_when_nothing_is_wrong(tmp_path):
+    tool = CreateFileTool(tmp_path)
+    result = tool.run(path="new.py", content="def f():\n    return 1\n")
+    assert "Note:" not in result
+
+
 def test_replaces_existing_file_entirely(tmp_path):
     """The behavior edit_file used to (unsafely) provide via empty
     search: this tool's whole purpose is replacing a file's entire

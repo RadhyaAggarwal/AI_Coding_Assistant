@@ -27,7 +27,7 @@ from typing import Any
 from tools.base import Tool
 from tools.diff_preview import colorize_diff, content_preview, unified_diff_preview
 from tools.path_safety import resolve_within_root
-from tools.syntax_check import InvalidSyntaxError, check_syntax
+from tools.syntax_check import InvalidSyntaxError, advisory_notes, check_syntax
 
 
 class CreateFileError(Exception):
@@ -107,4 +107,8 @@ class CreateFileTool(Tool):
         existed = resolved.is_file()
         resolved.parent.mkdir(parents=True, exist_ok=True)
         resolved.write_text(content, encoding="utf-8")
-        return f"{'Replaced' if existed else 'Created'} {path}."
+        result = f"{'Replaced' if existed else 'Created'} {path}."
+        notes = advisory_notes(resolved, content)
+        if notes:
+            return result + "\nNote: " + "\nNote: ".join(notes)
+        return result

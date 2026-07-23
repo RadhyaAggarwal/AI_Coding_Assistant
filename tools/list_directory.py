@@ -7,6 +7,7 @@ from typing import Any
 
 from tools.base import Tool
 from tools.path_safety import resolve_within_root
+from tools.path_suggestions import suggest_similar_directories
 
 
 class ListDirectoryTool(Tool):
@@ -36,7 +37,11 @@ class ListDirectoryTool(Tool):
     def run(self, path: str) -> str:
         resolved = resolve_within_root(self._project_root, path)
         if not resolved.is_dir():
-            raise NotADirectoryError(f"No such directory: {path}")
+            message = f"No such directory: {path}"
+            suggestions = suggest_similar_directories(self._project_root, path)
+            if suggestions:
+                message += ". Did you mean one of these real directories? " + ", ".join(suggestions)
+            raise NotADirectoryError(message)
 
         entries = sorted(resolved.iterdir(), key=lambda entry: entry.name)
         if not entries:

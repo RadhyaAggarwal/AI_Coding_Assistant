@@ -41,7 +41,8 @@ from typing import Any
 from tools.base import Tool
 from tools.diff_preview import colorize_diff, unified_diff_preview
 from tools.path_safety import resolve_within_root
-from tools.syntax_check import InvalidSyntaxError, check_syntax
+from tools.path_suggestions import suggest_similar_paths
+from tools.syntax_check import InvalidSyntaxError, advisory_notes, check_syntax
 
 
 class EditFileError(Exception):
@@ -128,11 +129,15 @@ class EditFileTool(Tool):
         resolved = resolve_within_root(self._project_root, path)
 
         if not resolved.is_file():
-            raise EditFileError(
+            message = (
                 f"'{path}' doesn't exist — edit_file only makes targeted "
                 "changes to existing files. To create it, call create_file "
                 "instead."
             )
+            suggestions = suggest_similar_paths(self._project_root, path)
+            if suggestions:
+                message += " Did you mean one of these real files? " + ", ".join(suggestions)
+            raise EditFileError(message)
 
         if search == "":
             raise EditFileError(
@@ -164,4 +169,7 @@ class EditFileTool(Tool):
             raise EditFileError(str(exc))
 
         resolved.write_text(new_content, encoding="utf-8")
+        notes = advisory_notes(resolved, new_content)
+        if notes:
+            return f"Edited {path}.\nNote: " + "\nNote: ".join(notes)
         return f"Edited {path}."

@@ -7,6 +7,7 @@ from typing import Any
 
 from tools.base import Tool
 from tools.path_safety import PathOutsideProjectError, resolve_within_root
+from tools.path_suggestions import suggest_similar_paths
 
 __all__ = ["PathOutsideProjectError", "ReadFileTool"]
 
@@ -37,5 +38,9 @@ class ReadFileTool(Tool):
     def run(self, path: str) -> str:
         resolved = resolve_within_root(self._project_root, path)
         if not resolved.is_file():
-            raise FileNotFoundError(f"No such file: {path}")
+            message = f"No such file: {path}"
+            suggestions = suggest_similar_paths(self._project_root, path)
+            if suggestions:
+                message += ". Did you mean one of these real files? " + ", ".join(suggestions)
+            raise FileNotFoundError(message)
         return resolved.read_text(encoding="utf-8")

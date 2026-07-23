@@ -41,6 +41,29 @@ def test_refuses_when_search_not_found(tmp_path):
         tool.run(path="sample.py", search="not in file", replace="whatever")
 
 
+def test_edit_still_succeeds_when_it_introduces_an_undefined_name(tmp_path):
+    """advisory_notes() is advisory, not blocking (see tools/syntax_check.py)
+    -- an edit that introduces a name used but never imported must still
+    be written, with a note attached to the result, not refused the way
+    a real syntax error is."""
+    (tmp_path / "sample.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
+    tool = EditFileTool(tmp_path)
+    result = tool.run(path="sample.py", search="return 1", replace="return get_object_or_404(1)")
+    assert (
+        tmp_path / "sample.py"
+    ).read_text(encoding="utf-8") == "def foo():\n    return get_object_or_404(1)\n"
+    assert "Edited" in result
+    assert "get_object_or_404" in result
+    assert "Note:" in result
+
+
+def test_edit_result_has_no_note_when_nothing_is_wrong(tmp_path):
+    (tmp_path / "sample.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
+    tool = EditFileTool(tmp_path)
+    result = tool.run(path="sample.py", search="return 1", replace="return 2")
+    assert "Note:" not in result
+
+
 def test_refuses_ambiguous_match(tmp_path):
     (tmp_path / "sample.py").write_text("x = 1\nx = 1\n", encoding="utf-8")
     tool = EditFileTool(tmp_path)
@@ -52,6 +75,19 @@ def test_refuses_edit_when_target_missing(tmp_path):
     tool = EditFileTool(tmp_path)
     with pytest.raises(EditFileError, match="create_file"):
         tool.run(path="missing.py", search="something", replace="else")
+
+
+def test_refuses_edit_when_target_missing_suggests_a_real_close_match(tmp_path):
+    """See tools/path_suggestions.py -- a wrong path guess against an
+    existing file should be corrected with the real file, not just
+    redirected to create_file."""
+    real = tmp_path / "core" / "views.py"
+    real.parent.mkdir(parents=True)
+    real.write_text("x = 1\n", encoding="utf-8")
+    tool = EditFileTool(tmp_path)
+
+    with pytest.raises(EditFileError, match="core/views.py"):
+        tool.run(path="view.py", search="x = 1", replace="x = 2")
 
 
 def test_refuses_edit_that_would_break_python_syntax(tmp_path):
