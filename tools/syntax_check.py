@@ -159,6 +159,18 @@ def _collect_bound_names(tree: ast.AST) -> set[str]:
             bound.add(node.name)
         elif isinstance(node, (ast.Global, ast.Nonlocal)):
             bound.update(node.names)
+        elif isinstance(node, ast.MatchAs) and node.name:
+            # match/case capture patterns (`case direction:`, `case [x,
+            # direction]:`) bind a name as a plain string attribute, not
+            # an ast.Name node -- invisible to the ast.Name/Store walk
+            # above. Confirmed live: without this, a real, correctly-
+            # bound capture like `direction` in `case ["go", direction]:`
+            # was flagged as undefined.
+            bound.add(node.name)
+        elif isinstance(node, ast.MatchStar) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            bound.add(node.rest)
     return bound
 
 

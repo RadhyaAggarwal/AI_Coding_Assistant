@@ -210,6 +210,60 @@ def test_advisory_notes_does_not_flag_unreachable_looking_code_in_a_different_if
     assert advisory_notes(Path("x.py"), content) == []
 
 
+def test_advisory_notes_does_not_flag_match_case_capture_patterns():
+    """Reproduces a real false positive found by a post-session coherence
+    audit: MatchAs/MatchStar/MatchMapping bind a captured name as a
+    plain string attribute on the pattern node, not an ast.Name node --
+    invisible to the ast.Name/Store walk the undefined-name check
+    otherwise relies on, so a genuinely valid capture like 'direction'
+    or 'rest' below was wrongly flagged as undefined before this was
+    fixed."""
+    content = (
+        "def handle(command):\n"
+        "    match command:\n"
+        "        case ['go', direction]:\n"
+        "            print(direction)\n"
+        "        case {'x': 0, 'y': 0, **rest}:\n"
+        "            print(rest)\n"
+        "        case other:\n"
+        "            print(other)\n"
+    )
+    assert advisory_notes(Path("x.py"), content) == []
+
+
+def test_advisory_notes_does_not_flag_unreachable_looking_code_in_a_different_match_case():
+    """Same requirement as the existing if/else test, for match/case: a
+    return inside one case's body must not make code after the whole
+    match statement look dead. Unlike an exhaustive match, this one has
+    no wildcard case, so the trailing return is genuinely reachable
+    (x != 1 falls through) -- a real correctness requirement, not just
+    the deliberately-tolerated under-flagging of a truly dead line."""
+    content = (
+        "def f(x):\n"
+        "    match x:\n"
+        "        case 1:\n"
+        "            return 'one'\n"
+        "    return 'other'\n"
+    )
+    assert advisory_notes(Path("x.py"), content) == []
+
+
+def test_advisory_notes_still_catches_dead_code_within_one_match_case():
+    content = (
+        "def f(x):\n"
+        "    match x:\n"
+        "        case 1:\n"
+        "            return 'one'\n"
+        "            print('dead')\n"
+        "        case _:\n"
+        "            return 'other'\n"
+    )
+    notes = advisory_notes(Path("x.py"), content)
+    assert len(notes) == 1
+    assert "unreachable" in notes[0]
+    assert "line 5" in notes[0]
+
+
 def test_advisory_notes_does_not_flag_code_in_a_finally_block_after_a_try_return():
     """A return inside try.body must not make code in finally.body look
     dead -- finally always runs regardless of whether try returned."""
