@@ -23,6 +23,7 @@ from typing import Any
 from repo_index.scanner import SKIP_DIR_NAMES
 from tools.base import Tool
 from tools.path_safety import resolve_within_root
+from tools.path_suggestions import suggest_similar_directories
 
 _MAX_MATCHES = 50
 
@@ -62,7 +63,11 @@ class SearchCodeTool(Tool):
     def run(self, query: str, path: str = ".") -> str:
         search_root = resolve_within_root(self._project_root, path)
         if not search_root.is_dir():
-            raise NotADirectoryError(f"No such directory: {path}")
+            message = f"No such directory: {path}"
+            suggestions = suggest_similar_directories(self._project_root, path)
+            if suggestions:
+                message += ". Did you mean one of these real directories? " + ", ".join(suggestions)
+            raise NotADirectoryError(message)
 
         needle = query.lower()
         matches: list[str] = []

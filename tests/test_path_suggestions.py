@@ -91,3 +91,28 @@ def test_directory_suggestions_falls_back_when_nothing_is_a_close_match(tmp_path
     suggestions = suggest_similar_directories(tmp_path, "zzz_completely_unrelated")
 
     assert set(suggestions) == {"core", "mysite"}
+
+
+def test_directory_suggestions_point_at_the_real_containing_directory_of_a_file(tmp_path):
+    """Reproduces the exact live misuse: search_code's 'path' argument
+    means "directory to search within", and a model passed a real FILE
+    path (core/views.py) instead. Its actual containing directory is a
+    certain fact, not a guess -- must be returned directly, not buried
+    behind fuzzy name matching against unrelated real directories (which
+    for a name like "views.py" would find nothing close anyway)."""
+    (tmp_path / "core").mkdir()
+    (tmp_path / "core" / "views.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "deploy").mkdir()
+    (tmp_path / "tests").mkdir()
+
+    suggestions = suggest_similar_directories(tmp_path, "core/views.py")
+
+    assert suggestions == ["core"]
+
+
+def test_directory_suggestions_for_a_file_at_the_project_root(tmp_path):
+    (tmp_path / "manage.py").write_text("x = 1\n", encoding="utf-8")
+
+    suggestions = suggest_similar_directories(tmp_path, "manage.py")
+
+    assert suggestions == ["."]

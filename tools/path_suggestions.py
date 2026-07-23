@@ -55,7 +55,18 @@ def suggest_similar_directories(project_root: Path, requested_path: str) -> list
     """Same idea as suggest_similar_paths, but for a directory path that
     doesn't exist -- ranked by directory-name similarity rather than
     filename+extension, since directories don't have one.
+
+    Live-observed misuse shape, distinct from a genuinely wrong guess: a
+    tool argument that means "directory to operate within" (search_code's
+    'path') gets handed a real FILE path instead (e.g. 'core/views.py').
+    That file's real containing directory is a certain fact, not a
+    fuzzy-matched guess -- checked first and returned alone when it
+    applies, skipping name-similarity matching entirely.
     """
+    as_file = project_root / requested_path
+    if as_file.is_file():
+        return [str(as_file.parent.relative_to(project_root)).replace("\\", "/")]
+
     requested_name = Path(requested_path).name
     if not requested_name:
         return []

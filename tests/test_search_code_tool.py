@@ -53,3 +53,29 @@ def test_blocks_path_traversal(tmp_path):
     tool = SearchCodeTool(tmp_path)
     with pytest.raises(PathOutsideProjectError):
         tool.run(query="x", path="..")
+
+
+def test_missing_directory_raises(tmp_path):
+    tool = SearchCodeTool(tmp_path)
+    with pytest.raises(NotADirectoryError):
+        tool.run(query="x", path="does_not_exist")
+
+
+def test_missing_directory_error_suggests_a_real_close_match(tmp_path):
+    """See tools/path_suggestions.py -- reproduces the exact live gap: a
+    model passed a FILE path (core/views.py) as search_code's 'path'
+    argument (which means "directory to search within"), and got a bare
+    rejection with no real-fact correction, unlike list_directory's
+    equivalent error which already had this."""
+    (tmp_path / "core" / "templates").mkdir(parents=True)
+    tool = SearchCodeTool(tmp_path)
+
+    with pytest.raises(NotADirectoryError, match="core/templates"):
+        tool.run(query="def", path="template")
+
+
+def test_missing_directory_error_has_no_suggestion_text_when_nothing_matches(tmp_path):
+    tool = SearchCodeTool(tmp_path)
+    with pytest.raises(NotADirectoryError) as exc_info:
+        tool.run(query="x", path="does_not_exist")
+    assert "Did you mean" not in str(exc_info.value)
