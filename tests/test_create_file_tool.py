@@ -35,6 +35,13 @@ def test_create_result_has_no_note_when_nothing_is_wrong(tmp_path):
     assert "Note:" not in result
 
 
+def test_should_show_result_is_true_only_when_a_note_is_present(tmp_path):
+    """See Tool.should_show_result -- mirrors edit_file's override."""
+    tool = CreateFileTool(tmp_path)
+    assert tool.should_show_result("Created new.py.") is False
+    assert tool.should_show_result("Created new.py.\nNote: line 1: unreachable code.") is True
+
+
 def test_replaces_existing_file_entirely(tmp_path):
     """The behavior edit_file used to (unsafely) provide via empty
     search: this tool's whole purpose is replacing a file's entire

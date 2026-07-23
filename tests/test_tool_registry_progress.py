@@ -104,3 +104,37 @@ def test_registry_does_not_report_the_result_when_show_result_is_false():
     registry.execute("fake_safe", {})
 
     assert seen == ["Running fake_safe..."]  # the "ok" result is never reported
+
+
+def test_default_should_show_result_matches_the_static_show_result_flag():
+    assert _FakeSafeTool().should_show_result("anything") is False
+    assert _FakeToolThatShowsItsResult().should_show_result("anything") is True
+
+
+class _FakeToolThatConditionallyShowsItsResult(Tool):
+    """Mirrors edit_file/create_file: show_result stays False (the
+    ordinary case is silent, unchanged from before), but
+    should_show_result overrides per-call based on the real content."""
+
+    name = "fake_conditional"
+    description = "test tool"
+    parameters = {"type": "object", "properties": {"noteworthy": {"type": "boolean"}}, "required": []}
+
+    def run(self, noteworthy=False):
+        return "Note: something" if noteworthy else "ok"
+
+    def should_show_result(self, result):
+        return result.startswith("Note:")
+
+
+def test_registry_uses_should_show_result_not_the_static_flag():
+    seen = []
+    registry = ToolRegistry(report=seen.append)
+    registry.register(_FakeToolThatConditionallyShowsItsResult())
+
+    registry.execute("fake_conditional", {"noteworthy": False})
+    assert seen == ["Running fake_conditional..."]  # ordinary case: silent, static flag is False
+
+    seen.clear()
+    registry.execute("fake_conditional", {"noteworthy": True})
+    assert seen == ["Running fake_conditional...", "Note: something"]  # this call's real result is shown

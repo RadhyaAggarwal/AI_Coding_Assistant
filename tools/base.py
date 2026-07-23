@@ -33,6 +33,18 @@ class Tool(ABC):
     # directly instead of relying entirely on the model's summary.
     show_result: bool = False
 
+    def should_show_result(self, result: str) -> bool:
+        """Whether THIS specific result should be printed to the human,
+        given the real return value -- not just the static show_result
+        flag. Defaults to show_result unchanged (run_command's blanket
+        always-show, everything else's blanket never-show). Override when
+        whether a result is worth interrupting the human for depends on
+        its actual content: edit_file/create_file use this to surface an
+        advisory_notes() note the moment it happens, without making the
+        ordinary (no-note) case any noisier than it already is.
+        """
+        return self.show_result
+
     # If True, agent_controller/loop.py's duplicate-call guard never
     # blocks a repeat of this tool, no matter what the exact same call
     # returned last time. Defaults False -- for most tools (including

@@ -225,6 +225,14 @@ def _find_dead_code(tree: ast.AST) -> list[int]:
     return dead_lines
 
 
+# Shared with edit_file.py/create_file.py: the exact separator used to
+# append advisory_notes() output to a success message, and to detect
+# afterward whether a given result string actually carries one (see
+# Tool.should_show_result -- a single source of truth instead of the
+# literal repeated at each call site, which could silently drift apart).
+NOTE_MARKER = "\nNote: "
+
+
 def advisory_notes(path: Path, content: str) -> list[str]:
     """Non-blocking notes about content that's about to be written.
 

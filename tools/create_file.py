@@ -27,7 +27,7 @@ from typing import Any
 from tools.base import Tool
 from tools.diff_preview import colorize_diff, content_preview, unified_diff_preview
 from tools.path_safety import resolve_within_root
-from tools.syntax_check import InvalidSyntaxError, advisory_notes, check_syntax
+from tools.syntax_check import NOTE_MARKER, InvalidSyntaxError, advisory_notes, check_syntax
 
 
 class CreateFileError(Exception):
@@ -67,6 +67,12 @@ class CreateFileTool(Tool):
 
     def __init__(self, project_root: str | Path):
         self._project_root = Path(project_root).resolve()
+
+    def should_show_result(self, result: str) -> bool:
+        # See Tool.should_show_result -- an ordinary create/replace stays
+        # silent (unchanged from before), but a note is worth surfacing to
+        # the human live, not just left for the model to maybe mention.
+        return NOTE_MARKER in result
 
     def target_path(self, arguments: dict[str, Any]) -> Path:
         return resolve_within_root(self._project_root, arguments["path"])
@@ -110,5 +116,5 @@ class CreateFileTool(Tool):
         result = f"{'Replaced' if existed else 'Created'} {path}."
         notes = advisory_notes(resolved, content)
         if notes:
-            return result + "\nNote: " + "\nNote: ".join(notes)
+            return result + NOTE_MARKER + NOTE_MARKER.join(notes)
         return result

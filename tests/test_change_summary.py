@@ -60,3 +60,44 @@ def test_deduplicates_repeated_edits_to_the_same_file_keeping_first_position():
 
 def test_empty_transcript_returns_no_changes():
     assert changed_files([]) == []
+
+
+def test_extracts_the_real_path_when_an_advisory_note_is_attached():
+    """Reproduces the exact live bug: edit_file's result carries a note
+    as further lines after the confirmation ("Edited {path}.\nNote:
+    ..."), and matching against the WHOLE content instead of just the
+    first line swept the note's own text into what should have been a
+    clean path, corrupting the printed summary."""
+    transcript = [
+        Message(
+            role="tool",
+            content=(
+                "Edited core/views.py.\nNote: line 25: unreachable code -- "
+                "follows an unconditional return/raise/break/continue "
+                "earlier in the same block."
+            ),
+        ),
+    ]
+    assert changed_files(transcript) == ["core/views.py"]
+
+
+def test_extracts_the_real_path_when_a_create_file_note_is_attached():
+    transcript = [
+        Message(
+            role="tool",
+            content=(
+                "Created scratch.py.\nNote: line 2: 'foo' is used but "
+                "doesn't appear to be imported or defined anywhere in "
+                "this file -- this may cause a NameError at runtime."
+            ),
+        ),
+    ]
+    assert changed_files(transcript) == ["scratch.py"]
+
+
+def test_deduplicates_correctly_when_only_one_of_two_edits_carries_a_note():
+    transcript = [
+        Message(role="tool", content="Edited a.py.\nNote: line 1: unreachable code."),
+        Message(role="tool", content="Edited a.py."),
+    ]
+    assert changed_files(transcript) == ["a.py"]

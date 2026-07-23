@@ -91,6 +91,6 @@ class ToolRegistry:
                 self._snapshots.snapshot_before_edit(target)
 
         result = tool.run(**arguments)
-        if tool.show_result:
+        if tool.should_show_result(result):
             self._report(result)
         return result

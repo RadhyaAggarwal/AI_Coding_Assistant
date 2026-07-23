@@ -64,6 +64,17 @@ def test_edit_result_has_no_note_when_nothing_is_wrong(tmp_path):
     assert "Note:" not in result
 
 
+def test_should_show_result_is_true_only_when_a_note_is_present(tmp_path):
+    """See Tool.should_show_result -- an ordinary edit stays silent, but
+    a note should be surfaced to the human live, not just left for the
+    model to maybe mention. Regression coverage for the real gap found
+    live: edit_file's show_result is False, so without this override a
+    note was never shown to the human at all except by accident."""
+    tool = EditFileTool(tmp_path)
+    assert tool.should_show_result("Edited sample.py.") is False
+    assert tool.should_show_result("Edited sample.py.\nNote: line 1: unreachable code.") is True
+
+
 def test_refuses_ambiguous_match(tmp_path):
     (tmp_path / "sample.py").write_text("x = 1\nx = 1\n", encoding="utf-8")
     tool = EditFileTool(tmp_path)
