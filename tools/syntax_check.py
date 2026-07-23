@@ -19,6 +19,7 @@ left unvalidated, the same scope limit repo_index/ already has.
 """
 import ast
 import builtins
+import re
 from pathlib import Path
 from typing import Callable
 
@@ -76,6 +77,23 @@ _CHECKERS: dict[str, Callable[[str], None]] = {
 }
 
 
+# Live-observed real failure, not hypothetical: a model wrote
+# <a href='{% url 'delete_note' note.id %}'> -- valid, idiomatic Django
+# template syntax (the template engine resolves {% %} before any HTML
+# parsing happens), but tree-sitter's plain HTML grammar has no concept
+# of template tags, sees the tag's own matching quote as closing the
+# outer attribute early, and correctly (from its own narrow view) calls
+# the rest malformed. This never changes what gets accepted or rejected
+# -- check_syntax()'s blocking behavior stays exactly as certain as it
+# already was -- it only adds a specific, mechanically-detected hint to
+# an already-correct rejection, the same "ground with a real fact"
+# pattern as the rest of this project's error messages. Scoped to the
+# tree-sitter-checked languages only; Python's compile() errors are a
+# different, unrelated failure shape.
+_TEMPLATE_TAG = re.compile(r"\{%.*?%\}|\{\{.*?\}\}", re.DOTALL)
+_TEMPLATE_TAG_EXTENSIONS = frozenset({".html", ".js", ".jsx", ".css"})
+
+
 def check_syntax(path: Path, content: str) -> None:
     """Raise InvalidSyntaxError if content is invalid for path's language.
 
@@ -89,13 +107,24 @@ def check_syntax(path: Path, content: str) -> None:
     try:
         checker(content)
     except SyntaxError as exc:
-        raise InvalidSyntaxError(
+        message = (
             f"The content is not valid {path.suffix} syntax and was not "
             f"written: {exc}. Check for issues like mismatched quotes "
             '(e.g. an over-escaped docstring producing literal \\" '
             'instead of "), unbalanced brackets/tags, or bad indentation '
             "from a partial edit."
         )
+        if path.suffix in _TEMPLATE_TAG_EXTENSIONS and _TEMPLATE_TAG.search(content):
+            message += (
+                " This content also contains template-tag syntax (e.g. "
+                "{% %} or {{ }}) -- if it uses the same quote character "
+                "as the string/attribute it's nested inside (e.g. "
+                "href='{% url 'x' %}'), that's a likely cause: this "
+                "checker doesn't understand template syntax and sees the "
+                "tag's own quote as closing the outer one early. Try a "
+                "different quote style for one of them."
+            )
+        raise InvalidSyntaxError(message)
 
 
 _BUILTIN_NAMES = frozenset(dir(builtins))

@@ -76,6 +76,47 @@ def test_jsx_uses_the_javascript_checker():
         check_syntax(Path("x.jsx"), "function f() { return 1; \n if (x")
 
 
+def test_rejection_hints_at_template_tag_quote_conflict_for_html():
+    """Reproduces the exact live bug: a model wrote
+    href='{% url 'delete_note' note.id %}' -- valid, idiomatic Django
+    template syntax, but tree-sitter's HTML grammar doesn't understand
+    {% %} and sees the tag's own quote as closing the attribute early.
+    The rejection itself must still happen (this never changes what's
+    accepted), but the message should point at the real, likely cause."""
+    broken = "<a href='{% url 'delete_note' note.id %}'>Delete</a>"
+    with pytest.raises(InvalidSyntaxError, match="template-tag syntax"):
+        check_syntax(Path("x.html"), broken)
+
+
+def test_rejection_hints_at_template_tag_quote_conflict_for_js():
+    broken = "var apiUrl = '{% url 'api_endpoint' %}';"
+    with pytest.raises(InvalidSyntaxError, match="template-tag syntax"):
+        check_syntax(Path("x.js"), broken)
+
+
+def test_rejection_hints_at_template_tag_quote_conflict_for_css():
+    broken = "content: \"{% trans 'Some String' %}\";"
+    with pytest.raises(InvalidSyntaxError, match="template-tag syntax"):
+        check_syntax(Path("x.css"), broken)
+
+
+def test_rejection_stays_generic_when_no_template_tags_present():
+    """The hint must not appear on an ordinary, unrelated syntax error --
+    it's specific to content that actually contains {% %}/{{ }}."""
+    with pytest.raises(InvalidSyntaxError) as exc_info:
+        check_syntax(Path("x.html"), '<div id="x"')
+    assert "template-tag syntax" not in str(exc_info.value)
+
+
+def test_rejection_stays_generic_for_python_even_with_template_tag_text():
+    """Scoped to the tree-sitter-checked languages only -- a Python
+    SyntaxError is a different, unrelated failure shape, even if the
+    broken content happens to contain {% %}-looking text."""
+    with pytest.raises(InvalidSyntaxError) as exc_info:
+        check_syntax(Path("x.py"), "def f(:\n    x = '{% not python %}'\n")
+    assert "template-tag syntax" not in str(exc_info.value)
+
+
 def test_advisory_notes_catches_the_real_live_missing_import():
     """Reproduces the exact live bug: core/views.py's delete_note used
     get_object_or_404 without ever importing it -- a real NameError at

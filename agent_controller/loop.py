@@ -140,6 +140,7 @@ command output, just not fed back into the model's own context, where
 it risks influencing behavior it was never meant to affect.
 """
 import json
+import re
 from pathlib import Path
 
 from agent_controller.context_budget import cap_observation, trim_to_budget
@@ -220,8 +221,17 @@ def is_incomplete_answer(answer: str) -> bool:
     return answer.startswith(_INCOMPLETE_ANSWER_PREFIX)
 
 
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
 def _load_system_prompt() -> str:
-    return _SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+    """The leading HTML comment in system_prompt.md (STATUS/ownership
+    notes for whoever edits the file, see CLAUDE.md's division-of-labor
+    rule) is developer-facing, not model-facing -- strip it before this
+    becomes the real system message, rather than sending it to the model
+    on every single call.
+    """
+    return _HTML_COMMENT.sub("", _SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")).strip()
 
 
 def _resolve_tool_calls(response: ModelResponse, known_tool_names: set[str]) -> list[ToolCall]:

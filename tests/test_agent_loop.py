@@ -18,7 +18,30 @@ from tools.registry import ToolRegistry
 from tools.run_command import RunCommandTool
 from tools.search_code import SearchCodeTool
 
-from agent_controller.loop import _MAX_CALLS_PER_TURN, _MAX_STEPS, _MAX_WASTED_STEPS, is_incomplete_answer, run
+from agent_controller.loop import (
+    _MAX_CALLS_PER_TURN,
+    _MAX_STEPS,
+    _MAX_WASTED_STEPS,
+    _load_system_prompt,
+    is_incomplete_answer,
+    run,
+)
+
+
+def test_load_system_prompt_strips_the_leading_html_comment():
+    """The STATUS/ownership comment at the top of system_prompt.md is
+    developer-facing (see CLAUDE.md's division-of-labor rule), not
+    model-facing -- it must never reach the real system message sent to
+    the model."""
+    prompt = _load_system_prompt()
+    assert "<!--" not in prompt
+    assert "-->" not in prompt
+    assert "STATUS" not in prompt
+
+
+def test_load_system_prompt_keeps_the_real_instructions():
+    prompt = _load_system_prompt()
+    assert "Understand the request" in prompt
 
 
 def _call_text(name: str, arguments: dict) -> str:
