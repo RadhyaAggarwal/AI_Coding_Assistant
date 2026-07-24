@@ -348,6 +348,18 @@ def run(
     real_steps_used = 0
     wasted_steps_used = 0
     gave_up_on_repetition = False
+    # Scoped to this one run() call only, same as wasted_steps_used itself
+    # -- a fresh --continue turn starts clear. Exact-string membership,
+    # matching the same "prefer exact, conservative comparison" precedent
+    # already_called uses for successfully-parsed calls (tuple equality,
+    # not fuzzy matching). Live-observed real gap: already_called only
+    # ever sees a call that DID parse into a real ToolCall -- one that
+    # fails to parse at all (e.g. a model writing an invalid \' JSON
+    # escape) bypasses it completely and can be repeated verbatim across
+    # the entire step budget with zero repeat-detection, unlike a
+    # successfully-parsed-but-wrong call, which already gets the cheap,
+    # bounded wasted-turn treatment.
+    failed_parse_attempts: set[str] = set()
 
     def _generate(sendable, **kwargs):
         # A ModelUnavailableError here would otherwise propagate straight
@@ -376,8 +388,37 @@ def run(
         calls = _resolve_tool_calls(response, known_tool_names)
 
         if not calls:
+            if mentions_tool_call_attempt(response.text) and response.text in failed_parse_attempts:
+                # Byte-for-byte identical to a failed-to-parse attempt
+                # already nudged once this run -- no new information
+                # reached the model despite already being told this exact
+                # JSON doesn't parse, so (mirroring the exemption an
+                # all-duplicate batch of successfully-parsed calls already
+                # gets) this doesn't consume the primary step budget, only
+                # the smaller, separately-bounded wasted-turn one.
+                messages.append(Message(role="assistant", content=response.text))
+                messages.append(
+                    Message(
+                        role="user",
+                        content=(
+                            "That's the exact same broken JSON you already "
+                            "tried -- it still won't parse, and sending it "
+                            "again won't change that. Look closely at the "
+                            "actual syntax problem (e.g. a stray backslash "
+                            "before a character JSON doesn't need escaped, "
+                            "like \\') and write something genuinely "
+                            "different, or answer in plain text without "
+                            "attempting a tool call."
+                        ),
+                    )
+                )
+                wasted_steps_used += 1
+                if wasted_steps_used >= _MAX_WASTED_STEPS:
+                    gave_up_on_repetition = True
+                continue
             real_steps_used += 1
             if mentions_tool_call_attempt(response.text):
+                failed_parse_attempts.add(response.text)
                 messages.append(Message(role="assistant", content=response.text))
                 messages.append(
                     Message(

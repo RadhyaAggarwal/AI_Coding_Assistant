@@ -742,6 +742,81 @@ def test_dedups_an_identical_call_even_when_it_fails(tmp_path):
     assert len(model.calls) == 1 + _MAX_WASTED_STEPS + 2
 
 
+_BROKEN_ESCAPE_JSON = (
+    "{\"name\": \"edit_file\", \"arguments\": {\"path\": \"x.js\", "
+    "\"search\": \"a\", \"replace\": \"it\\'s broken\"}}"
+)
+
+
+class ForeverRepeatsUnparseableJSONModel(ModelInterface):
+    """Reproduces the exact real live bug: a model wrote \\' inside a
+    JSON string (invalid -- JSON has no \\' escape), which never
+    resolves into a real ToolCall at all. Unlike RepeatsFailingEditModel
+    above (whose call DOES parse, so the already_called dedup guard
+    catches the repeat), this bypassed dedup entirely before the fix,
+    since that guard only ever sees calls that parsed successfully."""
+
+    def __init__(self):
+        self.calls: list[list[Message]] = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(list(messages))
+        return ModelResponse(text=_BROKEN_ESCAPE_JSON)
+
+
+def test_identical_unparseable_tool_call_does_not_consume_the_real_step_budget(tmp_path):
+    tools = ToolRegistry()
+    tools.register(EditFileTool(tmp_path))
+    model = ForeverRepeatsUnparseableJSONModel()
+
+    answer = run("Fix x.js", model, tools)
+
+    assert "kept repeating" in answer
+    assert is_incomplete_answer(answer)
+    # Same shape as test_gives_up_when_stuck_repeating_the_same_call: 1
+    # genuine first attempt (real budget) + _MAX_WASTED_STEPS repeats of
+    # the identical unparseable JSON (wasted budget) + the final no-tools
+    # synthesis attempt + one explicit nudge to stop and summarize.
+    assert len(model.calls) == 1 + _MAX_WASTED_STEPS + 2
+
+
+def test_a_different_unparseable_attempt_is_not_treated_as_a_repeat(tmp_path):
+    """The repeat-detection is exact-text, not "any unparseable attempt
+    counts the same" -- a genuinely different (if still broken) attempt
+    must still be treated as real progress, not silently folded into the
+    wasted-turn budget."""
+
+    _SECOND_BROKEN_JSON = (
+        "{\"name\": \"edit_file\", \"arguments\": {\"path\": \"y.js\", "
+        "\"search\": \"b\", \"replace\": \"also\\'s broken\"}}"
+    )
+
+    class TwoDifferentBrokenAttemptsThenAnAnswerModel(ModelInterface):
+        def __init__(self):
+            self.calls: list[list[Message]] = []
+
+        def generate(self, messages, tools=None):
+            self.calls.append(list(messages))
+            if len(self.calls) == 1:
+                return ModelResponse(text=_BROKEN_ESCAPE_JSON)
+            if len(self.calls) == 2:
+                return ModelResponse(text=_SECOND_BROKEN_JSON)
+            return ModelResponse(text="FINAL ANSWER")
+
+    tools = ToolRegistry()
+    tools.register(EditFileTool(tmp_path))
+    model = TwoDifferentBrokenAttemptsThenAnAnswerModel()
+
+    answer = run("Fix x.js", model, tools)
+
+    # Both distinct unparseable attempts get the plain "fix your JSON"
+    # nudge and count as real progress -- neither is a repeat of the
+    # other, so this reaches a genuine third turn instead of either one
+    # being folded into the wasted-turn path.
+    assert answer == "FINAL ANSWER"
+    assert len(model.calls) == 3
+
+
 def test_duplicate_rejection_includes_the_real_cached_result(tmp_path):
     """A deduped repeat must hand the model back the real content the
     first call actually returned, not just tell it "use the observation
