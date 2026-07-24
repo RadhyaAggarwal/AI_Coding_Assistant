@@ -237,6 +237,210 @@ def _find_dead_code(tree: ast.AST) -> list[int]:
     return dead_lines
 
 
+# --- JavaScript advisory checks -------------------------------------
+#
+# tree-sitter only gives a raw syntax tree, not the clean statement-list
+# abstraction ast.parse() gives Python -- so this is a real, separate
+# undertaking, not a port. Two things make it structurally harder than
+# the Python version, both handled by skipping the whole file rather
+# than guessing (the same precedent as Python's star-import skip):
+#
+# 1. A single node type (ast.Name) with a ctx flag tells Python apart a
+#    binding from a usage. JS's `identifier` node is used for BOTH, so
+#    "is this a binding" has to be inferred from the PARENT node's type
+#    and field, checked per binding shape (variable_declarator,
+#    function/class names, parameters, imports, catch clauses).
+# 2. Destructuring (`const {a, b} = obj`) binds names through a
+#    different node type entirely (shorthand_property_identifier_pattern,
+#    nested in object_pattern/array_pattern), not a plain identifier --
+#    unlike Python, missing this wouldn't just under-flag, it would
+#    actively false-positive (a real, correctly-bound destructured name
+#    would look undefined). _js_has_unhandled_binding_shape() detects
+#    any binding shape other than a plain identifier (or a plain
+#    identifier with a simple default value) structurally -- so an
+#    unrecognized future/rare shape is always treated as "skip", never
+#    "silently mishandled".
+_JS_LANGUAGE = Language(tree_sitter_javascript.language())
+_JS_PARSER = Parser(_JS_LANGUAGE)
+
+_JS_TERMINATING_STATEMENTS = frozenset(
+    {"return_statement", "throw_statement", "break_statement", "continue_statement"}
+)
+
+# Hand-curated, deliberately generous across both browser and Node
+# environments, since a given .js file's target runtime isn't known --
+# unlike Python's dir(builtins), this is a heuristic list, not an
+# authoritative one, and can't rule out missing an exotic global.
+_JS_GLOBALS = frozenset(
+    {
+        # browser
+        "window", "document", "console", "navigator", "location", "history",
+        "localStorage", "sessionStorage", "fetch", "XMLHttpRequest", "FormData",
+        "Headers", "Request", "Response", "URL", "URLSearchParams", "Event",
+        "CustomEvent", "alert", "confirm", "prompt", "setTimeout", "setInterval",
+        "clearTimeout", "clearInterval", "requestAnimationFrame",
+        # node.js
+        "require", "module", "exports", "process", "__dirname", "__filename",
+        "global", "Buffer", "setImmediate",
+        # language/runtime built-ins
+        "Object", "Array", "Function", "String", "Number", "Boolean", "Symbol",
+        "BigInt", "Math", "JSON", "Date", "RegExp", "Error", "TypeError",
+        "RangeError", "SyntaxError", "ReferenceError", "EvalError", "URIError",
+        "Promise", "Map", "Set", "WeakMap", "WeakSet", "Proxy", "Reflect",
+        "ArrayBuffer", "DataView", "Int8Array", "Uint8Array", "Uint8ClampedArray",
+        "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "Float32Array",
+        "Float64Array", "BigInt64Array", "BigUint64Array", "Intl", "WebAssembly",
+        "globalThis", "undefined", "NaN", "Infinity", "isNaN", "isFinite",
+        "parseInt", "parseFloat", "encodeURIComponent", "decodeURIComponent",
+        "encodeURI", "decodeURI", "structuredClone", "queueMicrotask", "arguments",
+    }
+)
+
+
+def _walk_ts(node):
+    yield node
+    for child in node.children:
+        yield from _walk_ts(child)
+
+
+def _js_has_unhandled_binding_shape(root) -> bool:
+    for node in _walk_ts(root):
+        if node.type == "variable_declarator":
+            name_node = node.child_by_field_name("name")
+            if name_node is not None and name_node.type != "identifier":
+                return True
+        elif node.type == "formal_parameters":
+            for child in node.children:
+                if child.type in ("identifier", "(", ")", ","):
+                    continue
+                if child.type == "assignment_pattern":
+                    left = child.child_by_field_name("left")
+                    if left is not None and left.type == "identifier":
+                        continue
+                return True
+        elif node.type == "catch_clause":
+            param = node.child_by_field_name("parameter")
+            if param is not None and param.type != "identifier":
+                return True
+        elif node.type == "arrow_function":
+            param = node.child_by_field_name("parameter")
+            if param is not None and param.type != "identifier":
+                return True
+    return False
+
+
+def _collect_js_bound_names(root) -> set[str]:
+    bound: set[str] = set()
+    for node in _walk_ts(root):
+        if node.type == "variable_declarator":
+            name_node = node.child_by_field_name("name")
+            if name_node is not None and name_node.type == "identifier":
+                bound.add(name_node.text.decode("utf-8"))
+        elif node.type in ("function_declaration", "generator_function_declaration", "class_declaration"):
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                bound.add(name_node.text.decode("utf-8"))
+        elif node.type == "formal_parameters":
+            for child in node.children:
+                if child.type == "identifier":
+                    bound.add(child.text.decode("utf-8"))
+                elif child.type == "assignment_pattern":
+                    left = child.child_by_field_name("left")
+                    if left is not None and left.type == "identifier":
+                        bound.add(left.text.decode("utf-8"))
+        elif node.type == "arrow_function":
+            param = node.child_by_field_name("parameter")
+            if param is not None and param.type == "identifier":
+                bound.add(param.text.decode("utf-8"))
+        elif node.type == "import_specifier":
+            alias = node.child_by_field_name("alias")
+            target = alias if alias is not None else node.child_by_field_name("name")
+            if target is not None and target.type == "identifier":
+                bound.add(target.text.decode("utf-8"))
+        elif node.type in ("namespace_import", "import_clause"):
+            for child in node.children:
+                if child.type == "identifier":
+                    bound.add(child.text.decode("utf-8"))
+        elif node.type == "catch_clause":
+            param = node.child_by_field_name("parameter")
+            if param is not None and param.type == "identifier":
+                bound.add(param.text.decode("utf-8"))
+    return bound
+
+
+def _is_js_binding_occurrence(node) -> bool:
+    """True if this specific identifier node IS a binding target itself
+    (a declaration/parameter/import name), not a use of one -- so a
+    declaration's own name is never flagged as reading an undefined
+    variable."""
+    parent = node.parent
+    if parent is None:
+        return False
+    if parent.type == "variable_declarator":
+        return parent.child_by_field_name("name") == node
+    if parent.type in ("function_declaration", "generator_function_declaration", "class_declaration"):
+        return parent.child_by_field_name("name") == node
+    if parent.type == "formal_parameters":
+        return True
+    if parent.type == "assignment_pattern":
+        return parent.child_by_field_name("left") == node
+    if parent.type == "arrow_function":
+        return parent.child_by_field_name("parameter") == node
+    if parent.type == "import_specifier":
+        # Both the external 'name' and local 'alias' (when renamed) are
+        # excluded here -- 'name' isn't real local code at all once
+        # aliased, and the actual local binding (alias, or name if there
+        # is no alias) is already in the bound set.
+        return True
+    if parent.type in ("namespace_import", "import_clause"):
+        return True
+    if parent.type == "catch_clause":
+        return parent.child_by_field_name("parameter") == node
+    return False
+
+
+def _find_js_undefined_names(root) -> list[tuple[str, int]]:
+    if _js_has_unhandled_binding_shape(root):
+        return []
+    bound = _collect_js_bound_names(root)
+    seen: set[str] = set()
+    undefined: list[tuple[str, int]] = []
+    for node in _walk_ts(root):
+        if node.type != "identifier" or _is_js_binding_occurrence(node):
+            continue
+        name = node.text.decode("utf-8")
+        if name not in bound and name not in _JS_GLOBALS and name not in seen:
+            seen.add(name)
+            undefined.append((name, node.start_point[0] + 1))
+    return undefined
+
+
+def _find_js_dead_code(root) -> list[int]:
+    """Same deliberately narrow rule as Python's _find_dead_code(): only
+    literal same-block sequential unreachability. Every JS block
+    (function/if/else/for/while/try/catch bodies) is wrapped in an
+    explicit statement_block node, so scanning each one independently,
+    the same way Python scans each body/orelse/finalbody list
+    independently, keeps an if/else's separate branches from cross-
+    contaminating for free -- verified directly against real parsed
+    if/else output, not assumed. switch/case bodies are deliberately not
+    handled (a different block shape, not yet verified) -- under-
+    covered, not mishandled.
+    """
+    dead_lines: list[int] = []
+    for block_node in _walk_ts(root):
+        if block_node.type != "statement_block":
+            continue
+        statements = [c for c in block_node.children if c.type not in ("{", "}")]
+        for i, stmt in enumerate(statements[:-1]):
+            if stmt.type in _JS_TERMINATING_STATEMENTS:
+                dead_lines.extend(s.start_point[0] + 1 for s in statements[i + 1 :])
+                break
+    return dead_lines
+
+
+# ----------------------------------------------------------------------
+
 # Shared with edit_file.py/create_file.py: the exact separator used to
 # append advisory_notes() output to a success message, and to detect
 # afterward whether a given result string actually carries one (see
@@ -245,26 +449,7 @@ def _find_dead_code(tree: ast.AST) -> list[int]:
 NOTE_MARKER = "\nNote: "
 
 
-def advisory_notes(path: Path, content: str) -> list[str]:
-    """Non-blocking notes about content that's about to be written.
-
-    Unlike check_syntax(), never prevents the write -- these are best-
-    effort heuristic signals (an undefined name might come from a star
-    import; even without one, static analysis can never rule out a name
-    created via exec()/globals() at runtime, a real, permanent blind
-    spot shared by every static tool, not a gap specific to this one)
-    rather than the certainty a real syntax error is. Meant to be
-    appended to a successful write's own result message so the model
-    sees a real, specific, mechanically-derived fact -- not raised as an
-    exception, and not a reason to block anything.
-
-    Python-only for now: ast gives the clean statement-list structure
-    both checks lean on; tree-sitter only gives a raw syntax tree for
-    JS/CSS/HTML, not an equivalent abstraction, so an equivalent check
-    there would be a meaningfully bigger, separate undertaking.
-    """
-    if path.suffix != ".py":
-        return []
+def _python_advisory_notes(content: str) -> list[str]:
     try:
         tree = ast.parse(content)
     except SyntaxError:
@@ -288,3 +473,55 @@ def advisory_notes(path: Path, content: str) -> list[str]:
             "same block."
         )
     return notes
+
+
+def _js_advisory_notes(content: str) -> list[str]:
+    tree = _JS_PARSER.parse(content.encode("utf-8"))
+    if tree.root_node.has_error:
+        # check_syntax() already validates this separately and raises
+        # first in the real edit_file/create_file flow.
+        return []
+    root = tree.root_node
+
+    notes = [
+        f"line {lineno}: '{name}' is used but doesn't appear to be "
+        "imported or defined anywhere in this file -- this may cause a "
+        "ReferenceError at runtime."
+        for name, lineno in _find_js_undefined_names(root)
+    ]
+    dead_lines = _find_js_dead_code(root)
+    if dead_lines:
+        notes.append(
+            f"line {min(dead_lines)}: unreachable code -- follows an "
+            "unconditional return/throw/break/continue earlier in the "
+            "same block."
+        )
+    return notes
+
+
+def advisory_notes(path: Path, content: str) -> list[str]:
+    """Non-blocking notes about content that's about to be written.
+
+    Unlike check_syntax(), never prevents the write -- these are best-
+    effort heuristic signals (an undefined name might come from a star
+    import; even without one, static analysis can never rule out a name
+    created via exec()/globals() at runtime, a real, permanent blind
+    spot shared by every static tool, not a gap specific to this one)
+    rather than the certainty a real syntax error is. Meant to be
+    appended to a successful write's own result message so the model
+    sees a real, specific, mechanically-derived fact -- not raised as an
+    exception, and not a reason to block anything.
+
+    Python and JavaScript (.js) only. Not .jsx -- JSX introduces node
+    shapes (element/component names) never verified against this logic,
+    so it's deliberately left unhandled rather than silently assumed
+    safe. Not CSS/HTML -- neither "undefined name" nor "dead code"
+    meaningfully applies to either (CSS has no variables in this sense
+    beyond custom properties, a different and narrower check; HTML has
+    no variables or control flow at all).
+    """
+    if path.suffix == ".py":
+        return _python_advisory_notes(content)
+    if path.suffix == ".js":
+        return _js_advisory_notes(content)
+    return []

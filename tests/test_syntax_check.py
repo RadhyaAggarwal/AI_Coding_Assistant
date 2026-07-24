@@ -271,9 +271,142 @@ def test_advisory_notes_does_not_flag_code_in_a_finally_block_after_a_try_return
     assert advisory_notes(Path("x.py"), content) == []
 
 
-def test_advisory_notes_only_checks_python_files():
-    assert advisory_notes(Path("x.js"), "undefined_name();") == []
+def test_advisory_notes_only_checks_python_and_javascript_files():
+    """.jsx/.css/.html are deliberately out of scope -- see advisory_notes()'s
+    own docstring for why (JSX node shapes never verified; CSS/HTML have
+    no variables/control-flow in the sense these two checks are about)."""
+    assert advisory_notes(Path("x.jsx"), "undefined_name();") == []
+    assert advisory_notes(Path("x.css"), ".button { color: red; }") == []
     assert advisory_notes(Path("x.html"), "<p>undefined_name</p>") == []
+
+
+def test_advisory_notes_catches_an_undefined_name_in_javascript():
+    """The JS analog of the real live Python bug this whole mechanism was
+    built for: a function call to something never imported or defined."""
+    content = "function greet(name) {\n    return get_object_or_404(name);\n}\n"
+    notes = advisory_notes(Path("x.js"), content)
+    assert len(notes) == 1
+    assert "get_object_or_404" in notes[0]
+    assert "line 2" in notes[0]
+    assert "ReferenceError" in notes[0]
+
+
+def test_advisory_notes_catches_dead_code_in_javascript():
+    content = "function f() {\n    return 1;\n    console.log('dead');\n}\n"
+    notes = advisory_notes(Path("x.js"), content)
+    assert len(notes) == 1
+    assert "unreachable" in notes[0]
+    assert "line 3" in notes[0]
+
+
+def test_advisory_notes_does_not_flag_ordinary_safe_javascript():
+    """The common case must stay quiet: imports, parameters with
+    defaults, class methods, try/catch, and both arrow-function forms
+    (single bare param, and parenthesized multi-param) must never be
+    flagged."""
+    content = (
+        "import { render } from 'react';\n"
+        "const x = 1;\n"
+        "function greet(name, opts = {}) {\n"
+        "    console.log(name, opts, x);\n"
+        "    return render(name);\n"
+        "}\n"
+        "class Widget {\n"
+        "    constructor(a) { this.a = a; }\n"
+        "    render() { return this.a; }\n"
+        "}\n"
+        "try {\n"
+        "    greet('a');\n"
+        "} catch (err) {\n"
+        "    console.error(err);\n"
+        "}\n"
+        "const add = (a, b) => a + b;\n"
+        "const double = a => a * 2;\n"
+    )
+    assert advisory_notes(Path("x.js"), content) == []
+
+
+def test_advisory_notes_does_not_flag_renamed_or_default_or_namespace_imports():
+    content = (
+        "import Default from 'a';\n"
+        "import * as ns from 'b';\n"
+        "import { foo as bar } from 'c';\n"
+        "console.log(Default, ns, bar);\n"
+    )
+    assert advisory_notes(Path("x.js"), content) == []
+
+
+def test_advisory_notes_does_not_flag_known_js_globals():
+    content = "function f() {\n    return fetch(window.location.href);\n}\n"
+    assert advisory_notes(Path("x.js"), content) == []
+
+
+def test_advisory_notes_skips_the_whole_javascript_file_on_destructuring():
+    """The real complication JS has that Python doesn't: destructuring
+    binds a name through a completely different node type than a plain
+    identifier. Missing it wouldn't just under-flag like Python's
+    design tolerates -- it would actively false-positive on a real,
+    correctly-bound name. Proven here with a genuinely undefined name
+    (unrelated to the destructuring) elsewhere in the SAME file, to
+    confirm this is a real whole-file skip, not a lucky non-detection."""
+    content = (
+        "function f() {\n"
+        "    const {a, b} = getStuff();\n"
+        "    return b;\n"
+        "}\n"
+        "function g() {\n"
+        "    return obviouslyUndefinedThing();\n"
+        "}\n"
+        "function getStuff() { return {a: 1, b: 2}; }\n"
+    )
+    assert advisory_notes(Path("x.js"), content) == []
+
+
+def test_advisory_notes_skips_the_whole_javascript_file_on_rest_parameters():
+    content = (
+        "function f(...args) {\n"
+        "    return args.length;\n"
+        "}\n"
+        "function g() {\n"
+        "    return obviouslyUndefinedThing();\n"
+        "}\n"
+    )
+    assert advisory_notes(Path("x.js"), content) == []
+
+
+def test_advisory_notes_skips_the_whole_javascript_file_on_destructured_catch_param():
+    content = (
+        "function f() {\n"
+        "    try {\n"
+        "        risky();\n"
+        "    } catch ({message}) {\n"
+        "        console.log(message);\n"
+        "    }\n"
+        "}\n"
+        "function risky() {}\n"
+    )
+    assert advisory_notes(Path("x.js"), content) == []
+
+
+def test_advisory_notes_still_catches_undefined_names_alongside_real_imports_in_javascript():
+    content = "import { render } from 'react';\nfunction f() {\n    render(totallyUndefinedThing);\n}\n"
+    notes = advisory_notes(Path("x.js"), content)
+    assert len(notes) == 1
+    assert "totallyUndefinedThing" in notes[0]
+
+
+def test_advisory_notes_does_not_flag_javascript_code_in_a_different_if_branch():
+    content = "function f(x) {\n    if (x) {\n        return 1;\n    } else {\n        return 2;\n    }\n    return 3;\n}\n"
+    assert advisory_notes(Path("x.js"), content) == []
+
+
+def test_advisory_notes_does_not_flag_javascript_code_in_a_finally_block_after_a_try_return():
+    content = "function f() {\n    try {\n        return 1;\n    } finally {\n        cleanup();\n    }\n}\nfunction cleanup() {}\n"
+    assert advisory_notes(Path("x.js"), content) == []
+
+
+def test_advisory_notes_returns_empty_on_invalid_javascript_rather_than_raising():
+    assert advisory_notes(Path("x.js"), "function f( {\n") == []
 
 
 def test_advisory_notes_returns_empty_on_invalid_python_rather_than_raising():
