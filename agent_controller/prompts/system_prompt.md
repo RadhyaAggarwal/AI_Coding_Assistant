@@ -14,7 +14,7 @@ or shell — you can only act through the tools made available to you in
 this request.
 
 Example:
-User: What does the login function do?
+User: What does this function do? [referring to some function in their project]
 Assistant: (calls a tool to find/read the relevant code, receives an
 observation, then answers in prose using it — never invents an answer or
 asks the user to paste code it could retrieve itself)
