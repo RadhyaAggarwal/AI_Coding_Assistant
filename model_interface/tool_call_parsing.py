@@ -35,11 +35,39 @@ def _find_balanced_json_objects(text: str) -> list[str]:
     objects one after another), that greedy span merges them into one
     invalid blob that fails to parse at all, silently discarding both
     attempts instead of recovering the first one.
+
+    String-aware: a literal '{' or '}' inside a JSON string value doesn't
+    count towards depth. Live-observed real gap in an earlier version
+    that counted every brace unconditionally: an edit_file 'search'
+    argument was just a function's opening line ("...containerId) {"),
+    and its 'replace' argument was a real JS code block containing its
+    own real '{'/'}' pairs -- both completely valid, sensible tool-call
+    argument values, but the naive counter didn't know either brace was
+    "just data" inside a string, so genuine, unrelated braces embedded in
+    argument text could throw the whole count off and never return to 0,
+    silently finding zero candidate blobs for a well-formed tool call.
+    Escape handling here is deliberately lenient (any '\\X' is treated as
+    one escaped unit, valid JSON escape or not) -- this function's job is
+    only finding a plausible span to hand to json.loads()/regex fallback
+    next, not validating the JSON itself.
     """
     blobs = []
     depth = 0
     start = None
+    in_string = False
+    escape_next = False
     for i, ch in enumerate(text):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\" and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
         if ch == "{":
             if depth == 0:
                 start = i
@@ -192,6 +220,28 @@ def mentions_tool_call_attempt(text: str) -> bool:
     WOULD otherwise resolve cleanly — since no tools are offered at that
     point, so any such attempt is itself evidence something is still
     fixated on tool-call syntax rather than answering.
+
+    Final whole-text fallback, independent of _candidate_json_blobs():
+    live-observed a shape neither the blob-finder nor either check above
+    could recover from -- a model embedded a JS regex literal containing
+    a raw, un-escaped double-quote (/"/g) inside a JSON string argument.
+    That's not a bad escape sequence (which the JSONDecodeError branch
+    above already handles) -- it's a raw quote character with no
+    backslash at all, which a strict scanner (rightly) reads as actually
+    *closing* the string early. Everything genuinely after that point,
+    including the argument's own real '{'/'}' pairs, gets misread as
+    outside any string, which can throw _find_balanced_json_objects()'s
+    depth count off by an amount that depends on the exact surrounding
+    text and doesn't reliably return to 0 -- silently finding zero
+    candidate blobs at all, even though the text obviously still names a
+    tool and supplies arguments. Since this function only ever decides
+    "does this look like an attempt" (not "here is the exact span to
+    execute" -- that's extract_tool_calls()'s stricter job), it's safe
+    to fall back to matching the same two patterns against the whole raw
+    text with no blob boundary at all -- both patterns still have to
+    match somewhere, the same dual-signal requirement everything above
+    relies on, so this doesn't reopen the "name alone is too loose"
+    false-positive case.
     """
     for blob in _candidate_json_blobs(text):
         try:
@@ -209,4 +259,4 @@ def mentions_tool_call_attempt(text: str) -> bool:
         if _first_present(parsed, _ARGS_KEYS) is not None:
             return True
 
-    return False
+    return bool(_NAME_KEY_PATTERN.search(text) and _ARGS_KEY_PATTERN.search(text))

@@ -212,6 +212,45 @@ def test_mentions_tool_call_attempt_true_for_valid_json_with_wrong_shaped_argume
     assert mentions_tool_call_attempt(text) is True
 
 
+def test_recovers_a_call_whose_search_argument_ends_on_an_unmatched_brace():
+    """Reproduces a real live bug: an edit_file 'search' argument was
+    just a function's opening line, ending on a literal, unmatched '{'
+    that's part of the argument VALUE, not real JSON structure -- a
+    perfectly sensible, valid search string. The naive (pre-fix) brace
+    counter treated every '{'/'}' as structural regardless of whether it
+    was inside a string, so this single stray brace threw off the whole
+    depth count and it never returned to 0, silently finding zero
+    candidate blobs for an otherwise well-formed tool call."""
+    text = (
+        '{"name": "edit_file", "arguments": {"path": "a.js", '
+        '"search": "function f(x) {", "replace": "function f(x) { return x; }"}}'
+    )
+    call = extract_tool_call(text, {"edit_file"})
+    assert call is not None
+    assert call.arguments["search"] == "function f(x) {"
+    assert call.arguments["replace"] == "function f(x) { return x; }"
+
+
+def test_mentions_tool_call_attempt_true_for_an_unescaped_quote_inside_an_argument():
+    """Reproduces the exact real live bug: a model embedded a JS regex
+    literal containing a raw, un-escaped double-quote (/"/g) inside a
+    JSON string argument. A strict scanner correctly reads that bare
+    quote as closing the string early, after which the real code that
+    follows (including its own real '{'/'}' pairs) gets misread as
+    outside any string -- this can throw even the string-aware brace
+    counter's depth count off in a way that depends on the exact
+    surrounding text and doesn't reliably return to 0, finding zero
+    candidate blobs at all despite the text obviously naming a tool and
+    supplying arguments. Deliberately a case where the blob-based checks
+    genuinely can't recover a clean span -- proves the whole-text
+    fallback catches it anyway."""
+    text = (
+        '{"name": "edit_file", "arguments": {"path": "a.js", "search": "x", '
+        '"replace": "function f() { return /"/g; }"}}'
+    )
+    assert mentions_tool_call_attempt(text) is True
+
+
 def test_mentions_tool_call_attempt_false_for_tool_name_mentioned_with_no_arguments_key():
     """Reproduces a real gap found in a post-session audit: a genuine
     final answer that happens to mention a real tool's name in JSON-ish
