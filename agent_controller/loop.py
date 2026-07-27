@@ -408,7 +408,9 @@ def run(
                             "before a character JSON doesn't need escaped, "
                             "like \\') and write something genuinely "
                             "different, or answer in plain text without "
-                            "attempting a tool call."
+                            "attempting a tool call. Respond with only the "
+                            "corrected tool call -- no example code, no "
+                            "explanation."
                         ),
                     )
                 )
@@ -430,7 +432,11 @@ def run(
                             "docstring) and that 'arguments' is an object, not a "
                             "bare string or other value. No tool ran. Fix it and "
                             "try again, or answer in plain text without "
-                            "attempting a tool call."
+                            "attempting a tool call. When you retry, respond with "
+                            "only the corrected tool call -- no example code "
+                            "shown beforehand, no explanation -- since example "
+                            "code before the real call has previously confused "
+                            "how it gets recognized."
                         ),
                     )
                 )

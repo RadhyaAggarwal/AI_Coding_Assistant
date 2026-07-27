@@ -780,6 +780,27 @@ def test_identical_unparseable_tool_call_does_not_consume_the_real_step_budget(t
     assert len(model.calls) == 1 + _MAX_WASTED_STEPS + 2
 
 
+def test_first_failed_parse_nudge_tells_the_model_to_skip_example_code(tmp_path):
+    """Live-observed: a model over-explaining with a markdown code
+    example before its real tool call, right after an earlier failure,
+    is exactly the shape that has previously thrown off recognizing the
+    real call that follows. Both nudge messages (first failure, and
+    repeat-of-an-identical-failure) now say so explicitly -- cheap,
+    carries no parser regression risk, targets the actual moment this
+    happens instead of the parser itself."""
+    tools = ToolRegistry()
+    tools.register(EditFileTool(tmp_path))
+    model = ForeverRepeatsUnparseableJSONModel()
+
+    run("Fix x.js", model, tools)
+
+    first_nudge = model.calls[1][-1].content
+    assert "no example code" in first_nudge
+
+    repeat_nudge = model.calls[2][-1].content
+    assert "no example code" in repeat_nudge
+
+
 def test_a_different_unparseable_attempt_is_not_treated_as_a_repeat(tmp_path):
     """The repeat-detection is exact-text, not "any unparseable attempt
     counts the same" -- a genuinely different (if still broken) attempt
