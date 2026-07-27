@@ -34,6 +34,15 @@ model:
   # agent_controller/context_budget.py. 32768 matches qwen2.5-coder:7b.
   context_window_tokens: 32768
 
+  # Name of a separate, much smaller embedding model (e.g. "nomic-embed-text"),
+  # pulled the same way as the coding model (`ollama pull <name>`). Optional
+  # and unset by default -- when unset, the semantic_search tool (meaning-
+  # based code search, for vague/conceptual queries the exact-match tools
+  # can't answer) simply isn't registered, rather than failing. This is a
+  # genuinely different, much smaller model than `name` above, not a mode
+  # of it, so it's configured separately.
+  embedding_name: "nomic-embed-text"
+
   # Sampling temperature passed to Ollama (lower = more deterministic,
   # favoring higher-probability tokens). Left unset, Ollama uses its own
   # default (0.8), which is tuned for general-purpose/creative use, not

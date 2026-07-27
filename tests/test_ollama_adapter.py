@@ -112,3 +112,63 @@ def test_raises_model_unavailable_not_a_raw_http_error_when_real_request_returns
 
     with pytest.raises(ModelUnavailableError):
         adapter.generate([Message(role="user", content="hi")])
+
+
+def test_embed_without_a_configured_embedding_model_raises_immediately():
+    """No embedding_model_name means semantic search is unavailable --
+    must fail clearly and immediately, not attempt a request with a
+    missing/wrong model name and produce a confusing downstream error."""
+    adapter = OllamaAdapter("http://localhost:11434", "qwen2.5-coder:7b")
+
+    with pytest.raises(ModelUnavailableError, match="No embedding model configured"):
+        adapter.embed("some text")
+
+
+@patch("model_interface.ollama_adapter.requests.get")
+@patch("model_interface.ollama_adapter.requests.post")
+def test_embed_sends_the_embedding_model_name_and_returns_the_real_vector(mock_post, mock_get):
+    mock_get.return_value = MagicMock()
+    mock_post.return_value = _mock_response({"embedding": [0.1, 0.2, 0.3]})
+    adapter = OllamaAdapter(
+        "http://localhost:11434",
+        "qwen2.5-coder:7b",
+        embedding_model_name="nomic-embed-text",
+    )
+
+    result = adapter.embed("def foo(): pass")
+
+    assert result == [0.1, 0.2, 0.3]
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload == {"model": "nomic-embed-text", "prompt": "def foo(): pass"}
+    assert mock_post.call_args.args[0] == "http://localhost:11434/api/embeddings"
+
+
+@patch("model_interface.ollama_adapter.requests.get")
+@patch("model_interface.ollama_adapter.requests.post")
+def test_embed_raises_model_unavailable_on_request_failure(mock_post, mock_get):
+    mock_get.return_value = MagicMock()
+    mock_post.side_effect = requests.exceptions.Timeout()
+    adapter = OllamaAdapter(
+        "http://localhost:11434", "qwen2.5-coder:7b", embedding_model_name="nomic-embed-text"
+    )
+
+    with pytest.raises(ModelUnavailableError):
+        adapter.embed("some text")
+
+
+@patch("model_interface.ollama_adapter.requests.get")
+@patch("model_interface.ollama_adapter.requests.post")
+def test_embed_raises_a_clear_error_when_the_response_has_no_embedding_list(mock_post, mock_get):
+    """Reproduces the realistic misconfiguration case: embedding_name
+    points at a real, working model that just isn't an embedding model
+    (e.g. the chat model itself) -- the response won't have the expected
+    shape, and this must fail clearly rather than return something
+    silently wrong (like an empty vector) to the similarity search."""
+    mock_get.return_value = MagicMock()
+    mock_post.return_value = _mock_response({"message": {"content": "not an embedding"}})
+    adapter = OllamaAdapter(
+        "http://localhost:11434", "qwen2.5-coder:7b", embedding_model_name="qwen2.5-coder:7b"
+    )
+
+    with pytest.raises(ModelUnavailableError, match="expected 'embedding' list"):
+        adapter.embed("some text")

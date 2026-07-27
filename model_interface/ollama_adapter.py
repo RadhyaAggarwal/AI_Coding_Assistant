@@ -28,12 +28,19 @@ class OllamaAdapter(ModelInterface):
         request_timeout_seconds: float = 120,
         temperature: float | None = None,
         health_check_timeout_seconds: float = 5,
+        embedding_model_name: str | None = None,
     ):
         self._endpoint_url = endpoint_url.rstrip("/")
         self._model_name = model_name
         self._timeout = request_timeout_seconds
         self._temperature = temperature
         self._health_check_timeout = health_check_timeout_seconds
+        # Optional and separate from _model_name -- an embedding model is a
+        # genuinely different, much smaller model than the coding model,
+        # not a mode of it. None (the default) means semantic search isn't
+        # available at all; main.py only registers that tool when this is
+        # set (see config.yaml's model.embedding_name).
+        self._embedding_model_name = embedding_model_name
 
     def _check_alive(self) -> None:
         """Fail fast if Ollama isn't responding, rather than blocking a full
@@ -120,3 +127,47 @@ class OllamaAdapter(ModelInterface):
         ]
 
         return ModelResponse(text=text, tool_calls=tool_calls, raw=data)
+
+    def embed(self, text: str) -> list[float]:
+        """Calls Ollama's /api/embeddings endpoint.
+
+        NOT yet live-verified against a real Ollama instance with an
+        embedding model pulled -- the endpoint configured in this project
+        was unreachable when this was written. Implemented against
+        Ollama's documented request/response shape
+        ({"model", "prompt"} -> {"embedding": [...]}); confirm this
+        against a real call before trusting it, the same as every other
+        piece of this project that got a live-verification pass before
+        being relied on.
+        """
+        if not self._embedding_model_name:
+            raise ModelUnavailableError(
+                "No embedding model configured (config.yaml's "
+                "model.embedding_name) -- semantic search is unavailable."
+            )
+        self._check_alive()
+
+        try:
+            response = requests.post(
+                f"{self._endpoint_url}/api/embeddings",
+                json={"model": self._embedding_model_name, "prompt": text},
+                timeout=self._timeout,
+            )
+            response.raise_for_status()
+        except requests.exceptions.RequestException as exc:
+            raise ModelUnavailableError(
+                f"Ollama at {self._endpoint_url} did not respond to an "
+                f"embedding request within {self._timeout}s (passed its "
+                f"health check moments earlier)."
+            ) from exc
+
+        data = response.json()
+        embedding = data.get("embedding")
+        if not isinstance(embedding, list):
+            raise ModelUnavailableError(
+                f"Ollama's embedding response didn't contain the expected "
+                f"'embedding' list (got: {data!r}) -- check that "
+                f"'{self._embedding_model_name}' is actually an embedding "
+                f"model, not a chat model."
+            )
+        return embedding

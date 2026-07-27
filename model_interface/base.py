@@ -75,3 +75,20 @@ class ModelInterface(ABC):
             calls it requested.
         """
         raise NotImplementedError
+
+    def embed(self, text: str) -> list[float]:
+        """Return a numeric embedding vector for text, for semantic
+        (meaning-based) search -- see repo_index/semantic_index.py.
+
+        A genuinely different capability from generate(), not a variant of
+        it: this calls a separate, much smaller embedding model (not the
+        coding model). Deliberately NOT abstract, unlike generate() --
+        most backends (and every existing fake test model) have no reason
+        to support this, the same way most Tool subclasses never override
+        confirmation_message(). Defaults to raising, so a caller with no
+        working embed() gets a clear, immediate failure rather than a
+        silently wrong result; real support is opt-in per backend.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support embeddings."
+        )

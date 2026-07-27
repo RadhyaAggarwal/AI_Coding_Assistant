@@ -17,7 +17,7 @@ from agent_controller.conversation_store import load_conversation, save_conversa
 from agent_controller.loop import is_incomplete_answer, run
 from agent_controller.session_log import append_session, read_sessions
 from config import load_config
-from model_interface.base import Message, ModelUnavailableError
+from model_interface.base import Message, ModelInterface, ModelUnavailableError
 from model_interface.ollama_adapter import OllamaAdapter
 from state.snapshot import SnapshotManager
 from tools.create_file import CreateFileTool
@@ -33,6 +33,7 @@ from tools.registry import ToolRegistry
 from tools.repo_overview import RepoOverviewTool
 from tools.run_command import RunCommandTool
 from tools.search_code import SearchCodeTool
+from tools.semantic_search import SemanticSearchTool
 
 
 def _state_dir(config: dict) -> Path:
@@ -49,6 +50,8 @@ def build_tool_registry(
     command_timeout_seconds: float,
     snapshots: SnapshotManager,
     state_dir: Path,
+    model: ModelInterface | None = None,
+    embedding_configured: bool = False,
 ) -> ToolRegistry:
     registry = ToolRegistry(snapshots=snapshots)
     registry.register(ReadFileTool(project_root))
@@ -63,6 +66,12 @@ def build_tool_registry(
     registry.register(FindImportersTool(project_root))
     registry.register(FindCallersTool(project_root))
     registry.register(RecentActivityTool(state_dir))
+    # Only registered when config.yaml's model.embedding_name is set --
+    # see tools/semantic_search.py. An agent with no working embed()
+    # simply never offers this tool, rather than offering it and failing
+    # confusingly the first time it's actually called.
+    if embedding_configured and model is not None:
+        registry.register(SemanticSearchTool(project_root, model))
     return registry
 
 
@@ -116,18 +125,22 @@ def main() -> None:
     if continue_previous:
         args = args[1:]
 
+    embedding_name = config["model"].get("embedding_name")
     model = OllamaAdapter(
         endpoint_url=config["model"]["endpoint_url"],
         model_name=config["model"]["name"],
         request_timeout_seconds=config["model"]["request_timeout_seconds"],
         temperature=config["model"].get("temperature"),
         health_check_timeout_seconds=config["model"].get("health_check_timeout_seconds", 5),
+        embedding_model_name=embedding_name,
     )
     tools = build_tool_registry(
         config["project"]["root_path"],
         config["execution"]["command_timeout_seconds"],
         snapshots,
         state_dir,
+        model=model,
+        embedding_configured=embedding_name is not None,
     )
 
     user_request = " ".join(args) or input("Request: ")
