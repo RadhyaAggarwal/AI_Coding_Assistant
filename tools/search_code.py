@@ -32,7 +32,7 @@ class SearchCodeTool(Tool):
     name = "search_code"
     description = (
         "Search for a text string across files in the project (a plain, "
-        "case-insensitive substring search — not a regex). Returns "
+        "case-insensitive substring search, not a regex). Returns "
         "matching 'path:line: content' entries, capped at 50 matches. "
         "Optionally scope the search to a subdirectory."
     )
@@ -54,8 +54,33 @@ class SearchCodeTool(Tool):
         "required": ["query"],
     }
 
-    def __init__(self, project_root: str | Path):
+    def __init__(self, project_root: str | Path, semantic_search_available: bool = False):
         self._project_root = Path(project_root).resolve()
+        # Live-observed gap: this tool only finds an exact literal
+        # substring, and a model that guesses a plausible-sounding phrase
+        # (e.g. "deduplicate tasks") gets "No matches found" and then
+        # concludes no such mechanism exists, rather than reaching for
+        # semantic_search -- even when it's available and its own
+        # description says it's for exactly this case. Nudging here,
+        # right where the miss actually happens, mirrors the same
+        # give-real-grounding-instead-of-a-gap-to-guess-into pattern
+        # already used for edit_file's error message and
+        # path_suggestions's "did you mean" hints. Optional and off by
+        # default so this tool doesn't reference a tool that might not be
+        # registered.
+        self._semantic_search_available = semantic_search_available
+        if semantic_search_available:
+            # Extends the class-level default on this instance only
+            # (Tool.schema() reads self.description, which resolves here
+            # before falling back to the class attribute) -- proactive
+            # counterpart to the runtime nudge above: this fires before a
+            # wasted attempt, not just after one fails. Mirrors
+            # semantic_search's own description, which already points the
+            # other way ("use find_symbol or search_code instead").
+            self.description = self.description + (
+                " If you don't know the exact text to search for, try "
+                "semantic_search instead."
+            )
 
     def progress_message(self, arguments: dict[str, Any]) -> str:
         return f"Searching for '{arguments['query']}'..."
@@ -90,4 +115,13 @@ class SearchCodeTool(Tool):
                     if len(matches) >= _MAX_MATCHES:
                         break
 
-        return "\n".join(matches) if matches else "No matches found."
+        if matches:
+            return "\n".join(matches)
+        if self._semantic_search_available:
+            return (
+                "No matches found. This only checks for an exact literal "
+                "substring -- if you're not sure of the exact wording or "
+                "name to search for (you know what something does, not "
+                "what it's called), try semantic_search instead."
+            )
+        return "No matches found."

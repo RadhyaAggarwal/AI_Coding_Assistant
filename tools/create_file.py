@@ -41,10 +41,11 @@ class CreateFileTool(Tool):
         "Create a new file, or replace an existing file's ENTIRE "
         "content. Use this for a brand-new file, or when you genuinely "
         "want to rewrite a file from scratch. For a targeted change to "
-        "part of an existing file, use edit_file instead — that only "
+        "part of an existing file, use edit_file instead, which only "
         "touches the exact text matched and leaves the rest of the file "
-        "alone, while this tool discards everything else the file "
-        "currently contains. Requires human confirmation before it runs."
+        "alone. Unlike edit_file, this tool discards everything else the "
+        "file currently contains. Requires human confirmation before it "
+        "runs."
     )
     parameters: dict[str, Any] = {
         "type": "object",

@@ -34,8 +34,17 @@ class FindSymbolTool(Tool):
         "required": ["name"],
     }
 
-    def __init__(self, project_root: str | Path):
+    def __init__(self, project_root: str | Path, semantic_search_available: bool = False):
         self._project_root = Path(project_root).resolve()
+        if semantic_search_available:
+            # See tools/search_code.py's identical pattern -- extends the
+            # class-level default on this instance only, proactively
+            # pointing at semantic_search the same way its own
+            # description already points back at find_symbol/search_code.
+            self.description = self.description + (
+                " If you don't know the exact name, try semantic_search "
+                "instead."
+            )
 
     def progress_message(self, arguments: dict[str, Any]) -> str:
         return f"Looking up symbol '{arguments['name']}'..."

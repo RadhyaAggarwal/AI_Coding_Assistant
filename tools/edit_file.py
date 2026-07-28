@@ -56,11 +56,11 @@ class EditFileTool(Tool):
         "'search' must be a non-empty, exact substring of the file's "
         "current content that occurs exactly once; it will be replaced "
         "with 'replace'. If you don't already know the file's exact "
-        "current content, call read_file on it first — guessing at "
-        "'search' is refused, not guessed at. To create a new file, or "
-        "to replace an existing file's entire content, use create_file "
-        "instead — this tool never does that. Requires human "
-        "confirmation before it runs."
+        "current content, call read_file on it first. A 'search' value "
+        "that doesn't match exactly is refused with an error, never "
+        "approximated. To create a new file, or to replace an existing "
+        "file's entire content, use create_file instead; this tool never "
+        "does that. Requires human confirmation before it runs."
     )
     parameters: dict[str, Any] = {
         "type": "object",

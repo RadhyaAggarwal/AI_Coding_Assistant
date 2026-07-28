@@ -82,8 +82,17 @@ class ToolRegistry:
             # non-empty feedback string is truthy and would otherwise be
             # read as approval.
             if approval is not True:
+                # Deliberately omits the raw arguments dict that used to
+                # appear here (e.g. "...with {'path': ..., 'search': ...,
+                # 'replace': ...}") -- live-observed as both hard to read
+                # (now that tool failures are reported live to the human,
+                # not just fed to the model) and genuinely redundant: the
+                # model's own immediately-prior turn already contains the
+                # exact call it just made (see loop.py, the assistant
+                # message appended before calls are executed), so nothing
+                # is actually lost by not repeating it here.
                 reason = f": {approval}" if isinstance(approval, str) else ""
-                raise ToolCallDeniedError(f"User declined to run '{name}' with {arguments}{reason}")
+                raise ToolCallDeniedError(f"User declined to run '{name}'{reason}")
 
         if self._snapshots is not None:
             target = tool.target_path(arguments)

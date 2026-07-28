@@ -72,6 +72,19 @@ agent:
   # needs far fewer distinct steps than a multi-file scaffold).
   max_steps: 15
 
+  # Opt-in, off by default. When True (and model.embedding_name is also
+  # set), per-step tool routing (agent_controller/tool_router.py) also
+  # scores each tool by embedding similarity to the request, not just
+  # keyword overlap -- catches a conceptually relevant tool worded
+  # differently than the request (confirmed with real data: "there's a
+  # bug, fix it" scores edit_file at 0 by keyword overlap alone, since
+  # its description never says "fix" or "bug"). Left off by default
+  # because it adds a real embedding-model network call to every single
+  # step of every task, not just when a tool is actually used -- a cost
+  # worth taking deliberately, not silently. Fully additive: the default
+  # (keyword-only) routing path is never modified by this flag existing.
+  embedding_aware_routing: false
+
 execution:
   # Max seconds a run_command tool call may run before being killed.
   command_timeout_seconds: 60

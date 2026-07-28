@@ -17,7 +17,7 @@ class FindImportersTool(Tool):
     description = (
         "Find which files import a given module (case-insensitive exact "
         "match on the import reference as written in source, e.g. "
-        "'os.path' or './utils.js' — not a substring search). Covers "
+        "'os.path' or './utils.js', not a substring search). Covers "
         "Python import/from-import statements and JavaScript "
         "import/require() statements. Returns each match's file, line "
         "number, and a short source snippet."

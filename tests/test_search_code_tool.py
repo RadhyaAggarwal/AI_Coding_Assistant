@@ -27,6 +27,24 @@ def test_no_matches(tmp_path):
     assert tool.run(query="needle") == "No matches found."
 
 
+def test_no_matches_mentions_semantic_search_when_available(tmp_path):
+    """Live-observed real failure this closes: given a vague query with
+    no exact literal match, the model gave up and wrongly concluded no
+    such mechanism existed, rather than trying semantic_search -- even
+    though it was available and its own description says it's for
+    exactly this case. Nudge fires right at the point of the miss."""
+    (tmp_path / "sample.py").write_text("nothing here\n", encoding="utf-8")
+    tool = SearchCodeTool(tmp_path, semantic_search_available=True)
+    result = tool.run(query="needle")
+    assert "semantic_search" in result
+
+
+def test_no_matches_stays_plain_when_semantic_search_is_not_available(tmp_path):
+    (tmp_path / "sample.py").write_text("nothing here\n", encoding="utf-8")
+    tool = SearchCodeTool(tmp_path, semantic_search_available=False)
+    assert tool.run(query="needle") == "No matches found."
+
+
 def test_skips_junk_directories(tmp_path):
     skip_dir = tmp_path / "node_modules"
     skip_dir.mkdir()

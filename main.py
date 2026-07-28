@@ -53,15 +53,21 @@ def build_tool_registry(
     model: ModelInterface | None = None,
     embedding_configured: bool = False,
 ) -> ToolRegistry:
+    # Computed once, reused everywhere semantic_search's own availability
+    # matters (whether it gets registered at all, and whether search_code/
+    # find_symbol should mention it) -- one signal, not several
+    # independently-maintained conditions that could drift apart.
+    semantic_search_available = embedding_configured and model is not None
+
     registry = ToolRegistry(snapshots=snapshots)
     registry.register(ReadFileTool(project_root))
     registry.register(ListDirectoryTool(project_root))
-    registry.register(SearchCodeTool(project_root))
+    registry.register(SearchCodeTool(project_root, semantic_search_available=semantic_search_available))
     registry.register(RunCommandTool(project_root, timeout_seconds=command_timeout_seconds))
     registry.register(EditFileTool(project_root))
     registry.register(CreateFileTool(project_root))
     registry.register(RepoOverviewTool(project_root))
-    registry.register(FindSymbolTool(project_root))
+    registry.register(FindSymbolTool(project_root, semantic_search_available=semantic_search_available))
     registry.register(HtmlOverviewTool(project_root))
     registry.register(FindImportersTool(project_root))
     registry.register(FindCallersTool(project_root))
@@ -70,7 +76,7 @@ def build_tool_registry(
     # see tools/semantic_search.py. An agent with no working embed()
     # simply never offers this tool, rather than offering it and failing
     # confusingly the first time it's actually called.
-    if embedding_configured and model is not None:
+    if semantic_search_available:
         registry.register(SemanticSearchTool(project_root, model))
     return registry
 
@@ -166,6 +172,13 @@ def main() -> None:
             already_called=already_called,
             max_steps=config["agent"]["max_steps"],
             call_results=call_results,
+            # embedding_model reuses the same OllamaAdapter instance --
+            # its embed() is already wired up whenever embedding_name is
+            # configured, no separate object needed. use_embedding_routing
+            # defaults to False in config.yaml, so this is a no-op for
+            # anyone who hasn't explicitly opted in.
+            embedding_model=model if embedding_name is not None else None,
+            use_embedding_routing=config["agent"].get("embedding_aware_routing", False),
         )
     except ModelUnavailableError as exc:
         print(f"Model unavailable: {exc}")

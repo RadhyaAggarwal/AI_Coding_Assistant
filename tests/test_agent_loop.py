@@ -79,6 +79,60 @@ def test_huge_tool_observation_gets_capped(tmp_path):
     assert "truncated" in tool_message.content
 
 
+class AnswersImmediatelyAndTracksEmbedCalls(ModelInterface):
+    """Never calls a tool -- just answers on the first turn. Only useful
+    property for these tests is embed_calls, which proves whether the
+    opt-in hybrid routing path was ever actually exercised."""
+
+    def __init__(self):
+        self.embed_calls: list[str] = []
+
+    def generate(self, messages, tools=None):
+        return ModelResponse(text="Got it.")
+
+    def embed(self, text):
+        self.embed_calls.append(text)
+        return [1.0, 0.0]
+
+
+def _register_enough_tools_to_trigger_routing(tools: ToolRegistry, project_root) -> None:
+    """route_tools()/route_tools_hybrid() both skip scoring entirely
+    when there are _DEFAULT_MIN_KEEP (4) or fewer tools registered --
+    nothing to narrow. Registering more than that is required for either
+    router to actually run its scoring logic at all."""
+    tools.register(ReadFileTool(project_root))
+    tools.register(ListDirectoryTool(project_root))
+    tools.register(SearchCodeTool(project_root))
+    tools.register(RunCommandTool(project_root, timeout_seconds=60))
+    tools.register(EditFileTool(project_root))
+    tools.register(CreateFileTool(project_root))
+
+
+def test_embedding_model_is_never_used_when_use_embedding_routing_is_left_default(tmp_path):
+    """Default-off wiring check: even when a fully working embedding
+    model is passed in, run() must not call embed() at all unless
+    use_embedding_routing is explicitly turned on -- config.yaml's
+    agent.embedding_aware_routing defaults to False specifically so this
+    stays a no-op for anyone who hasn't opted in."""
+    tools = ToolRegistry()
+    _register_enough_tools_to_trigger_routing(tools, tmp_path)
+    model = AnswersImmediatelyAndTracksEmbedCalls()
+
+    run("Summarize huge.txt", model, tools, embedding_model=model)
+
+    assert model.embed_calls == []
+
+
+def test_embedding_model_is_used_when_use_embedding_routing_is_enabled(tmp_path):
+    tools = ToolRegistry()
+    _register_enough_tools_to_trigger_routing(tools, tmp_path)
+    model = AnswersImmediatelyAndTracksEmbedCalls()
+
+    run("Summarize huge.txt", model, tools, embedding_model=model, use_embedding_routing=True)
+
+    assert model.embed_calls  # at least the query got embedded
+
+
 class RepeatedLargeReadModel(ModelInterface):
     """Reads several different large files in sequence, then answers —
     used to verify that once accumulated history exceeds a tight budget,
@@ -740,6 +794,26 @@ def test_dedups_an_identical_call_even_when_it_fails(tmp_path):
     # budget) + the final no-tools synthesis attempt + one explicit
     # nudge.
     assert len(model.calls) == 1 + _MAX_WASTED_STEPS + 2
+
+
+def test_a_failed_tool_call_is_reported_live_not_only_to_the_model(tmp_path):
+    """Live-observed gap: a confirmation-gated tool can show a human a
+    diff preview, get approved, and then still fail real validation
+    afterward (the preview and the real check are computed separately).
+    The failure used to reach only the model's own context -- a human who
+    just approved something had no live way to know it silently didn't
+    happen. Reported the same channel a duplicate-call skip already
+    uses."""
+    (tmp_path / "sample.txt").write_text("sample contents", encoding="utf-8")
+    reported = []
+    tools = ToolRegistry(confirm=lambda description: True, report=reported.append)
+    tools.register(EditFileTool(tmp_path))
+    model = RepeatsFailingEditModel()
+
+    run("Fix sample.txt", model, tools)
+
+    assert any("edit_file' failed" in message for message in reported)
+    assert any("not found" in message for message in reported)
 
 
 _BROKEN_ESCAPE_JSON = (

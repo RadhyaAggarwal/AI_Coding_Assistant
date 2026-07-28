@@ -145,7 +145,7 @@ from pathlib import Path
 
 from agent_controller.context_budget import cap_observation, trim_to_budget
 from agent_controller.request_coverage import find_unaddressed_part
-from agent_controller.tool_router import route_tools
+from agent_controller.tool_router import ToolEmbeddingCache, route_tools, route_tools_hybrid
 from model_interface.base import (
     Message,
     ModelInterface,
@@ -284,6 +284,8 @@ def run(
     already_called: set[tuple[str, str]] | None = None,
     max_steps: int = _MAX_STEPS,
     call_results: dict[tuple[str, str], str] | None = None,
+    embedding_model: ModelInterface | None = None,
+    use_embedding_routing: bool = False,
 ) -> str:
     """Run one request through the agent loop and return its final answer.
 
@@ -378,12 +380,30 @@ def run(
             _sync_call_results(call_results, result_cache)
             raise
 
+    # Built once, reused for every step of this request (not once per
+    # step) -- ToolEmbeddingCache caches each tool schema's embedding
+    # internally, so a fresh one every step would throw that caching
+    # away and re-embed the whole tool set every time for no reason.
+    # None whenever the opt-in flag is off or no embedding model was
+    # given, which is what makes route_tools_hybrid() never get called
+    # at all in that case -- see the branch below.
+    embedding_cache = (
+        ToolEmbeddingCache(embedding_model)
+        if use_embedding_routing and embedding_model is not None
+        else None
+    )
+
     while real_steps_used < max_steps and wasted_steps_used < _MAX_WASTED_STEPS:
         sendable = trim_to_budget(messages, context_window_tokens)
         query_text = " ".join(m.content for m in sendable if m.role != "system")
         is_first_step = real_steps_used == 0 and wasted_steps_used == 0
         step_keep_names = always_keep_names | _ORIENTATION_TOOL_NAMES if is_first_step else always_keep_names
-        offered_tools = route_tools(query_text, tools.schemas(), always_keep_names=step_keep_names)
+        if embedding_cache is not None:
+            offered_tools = route_tools_hybrid(
+                query_text, tools.schemas(), embedding_cache, always_keep_names=step_keep_names
+            )
+        else:
+            offered_tools = route_tools(query_text, tools.schemas(), always_keep_names=step_keep_names)
         response = _generate(sendable, tools=offered_tools)
         calls = _resolve_tool_calls(response, known_tool_names)
 
@@ -518,6 +538,18 @@ def run(
             try:
                 observation = tools.execute(call.name, call.arguments)
             except Exception as exc:
+                # Live-observed gap: a confirmation-gated tool (e.g.
+                # edit_file) can show a human a diff preview, get approved,
+                # and then still fail real validation afterward (the
+                # preview and the real check are computed separately --
+                # see edit_file.py's confirmation_message() docstring). The
+                # only place that failure used to go was the tool-role
+                # message below, visible only to the model -- a human who
+                # just approved something had no live way to know it
+                # silently didn't happen, or why, short of independently
+                # re-reading the file. Reported the same way a duplicate-
+                # call skip already is, not a new channel.
+                tools.report(f"'{call.name}' failed: {exc}")
                 # Record this exact call as already-tried even though it
                 # failed -- otherwise a call that fails identically every
                 # time (e.g. an edit whose result would be invalid syntax,

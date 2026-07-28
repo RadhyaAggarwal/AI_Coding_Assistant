@@ -20,14 +20,14 @@ class SemanticSearchTool(Tool):
     name = "semantic_search"
     description = (
         "Find code relevant to a vague, natural-language question about "
-        "what something does, when you don't know its exact name (e.g. "
-        "'where do we check if a user is allowed to delete something', "
-        "'what validates an email address'). Ranks real functions/classes "
-        "by meaning, not literal text match. If you already know the "
-        "exact symbol name or a literal string to search for, use "
-        "find_symbol or search_code instead -- they're faster and more "
-        "precise for that. Requires an embedding model to be configured; "
-        "unavailable otherwise."
+        "what something does or how it works, when you don't know its "
+        "exact name (e.g. 'how do we make sure an uploaded file is not "
+        "too large', 'where do we handle a failed payment retry'). Ranks "
+        "real functions/classes by meaning, not literal text match. If "
+        "you already know the exact symbol name or a literal string to "
+        "search for, use find_symbol or search_code instead -- they're "
+        "faster and more precise for that. Requires an embedding model "
+        "to be configured; unavailable otherwise."
     )
     parameters: dict[str, Any] = {
         "type": "object",

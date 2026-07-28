@@ -19,7 +19,7 @@ class FindCallersTool(Tool):
         "Find where a function or method named 'name' is actually "
         "called (case-insensitive exact match on the call's surface "
         "name, not a substring search, and not resolved to a specific "
-        "class/object — 'obj.foo()' matches a search for 'foo' "
+        "class/object: 'obj.foo()' matches a search for 'foo' "
         "regardless of what obj is). Returns each call site's file, "
         "line number, and a short source snippet. Only understands "
         "Python and JavaScript files."

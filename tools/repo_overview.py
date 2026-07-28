@@ -17,7 +17,7 @@ class RepoOverviewTool(Tool):
         "Get a structural overview of the project: file count, "
         "languages used (by file extension), and detected manifest/"
         "config files (requirements.txt, package.json, etc.). Takes no "
-        "arguments — it always covers the whole project."
+        "arguments. It always covers the whole project."
     )
     parameters: dict[str, Any] = {"type": "object", "properties": {}, "required": []}
 
