@@ -20,3 +20,7 @@ Thumbs.db
 # Agent-generated file snapshots and change log (state/snapshot.py) —
 # local recovery data, not project source
 .agent_state/
+
+# Colab live-testing notebook (see DEPLOYMENT.md's "testing only" note
+# in its own first cell) — a personal testing tool, not project source
+colab_bigger_model_test.ipynb

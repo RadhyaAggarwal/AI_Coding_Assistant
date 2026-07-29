@@ -31,7 +31,11 @@ model:
   # The pulled model's actual context window, in tokens (check with
   # `ollama show <name>` if you change models). Used to budget how much
   # conversation history is sent per request — see
-  # agent_controller/context_budget.py. 32768 matches qwen2.5-coder:7b.
+  # agent_controller/context_budget.py. 32768 is the Qwen2.5-Coder
+  # family's standard context length, believed to apply to both 7b and
+  # the 14b currently configured above -- not independently re-verified
+  # against 14b specifically via `ollama show` in this project, so
+  # double-check this if context-budget behavior ever looks off.
   context_window_tokens: 32768
 
   # Name of a separate, much smaller embedding model (e.g. "nomic-embed-text"),

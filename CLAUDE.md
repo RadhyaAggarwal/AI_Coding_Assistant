@@ -47,9 +47,25 @@ propose changes rather than overwriting directly.
 ## Commands
 - Run app: `python main.py`
 - Run tests: `pytest tests/`
-- Start local model: `ollama run <model-name-from-config.yaml>`
+- Start local model server: `ollama serve` (this project talks to its HTTP
+  API, not the `ollama run` chat CLI — see `DEPLOYMENT.md` if that
+  distinction is unfamiliar)
 
 ## Current status
-Project is in early scaffolding (Phase 0 / minimal vertical slice). Prioritize
-a thin end-to-end path (talk to model -> one working tool -> minimal planner)
-over building any single subsystem out fully in isolation.
+No longer early scaffolding — see `README.md` for a full capability
+overview. In brief: a working multi-step ReAct loop (`agent_controller/`)
+with per-step tool routing, duplicate-call detection, and context-window
+budgeting; 13 tools including file read/edit/create, shell execution,
+AST/tree-sitter-based symbol/relationship lookup (`find_symbol`,
+`find_importers`, `find_callers`), and an opt-in embeddings-based
+`semantic_search`; snapshot/rollback for every edit; session logging
+(`--sessions`) and short-term conversation continuation (`--continue`);
+400+ tests. Deliberately not built, left for whoever picks this up next
+(chosen as a good fit for someone newer to AI/ML methods specifically,
+not an oversight): Git-specific tools (`run_command` can already run raw
+git commands, but there's no dedicated, structured tool for it), and a
+possible dedicated testing/verification subsystem beyond what the
+existing loop + `run_command` + `edit_file` already covers. See project
+memory / commit history for the detailed history of what's been tried,
+what worked, and what's an accepted model-capability limitation rather
+than an open bug.

@@ -19,7 +19,9 @@ Ollama is running on the same machine or a different one on the network.
 
 The handful of commands worth knowing:
 
-- `ollama pull <model>` — downloads a model (e.g. `qwen2.5-coder:7b`).
+- `ollama pull <model>` — downloads a model (e.g. `qwen2.5-coder:14b`,
+  the size currently configured in this project's `config.yaml` — see
+  the note on model size in the Requirements section below).
   Only needs to happen once per machine that will actually run the model.
 - `ollama list` — shows which models are downloaded.
 - `ollama run <model>` — an interactive chat session directly in the
@@ -48,6 +50,18 @@ or touches anyone's project files.
   strongly recommended — this project's own CPU-only testing has run
   roughly 1-4 minutes per model call, which multiplies badly once
   several people are sharing one machine.
+- **Model size, chosen deliberately, not the smallest option:** this
+  project currently defaults to `qwen2.5-coder:14b` (`config.yaml`'s
+  `model.name`), not the smaller `qwen2.5-coder:7b` also referenced
+  throughout this project's history — live testing found the 14B model
+  noticeably more reliable at multi-step tool use and genuine multi-hop
+  reasoning that the 7B model couldn't do at all (see project memory
+  for specifics). This is a real hardware tradeoff, not free: 14B needs
+  more RAM/VRAM than 7B, which matters more here than on a single
+  personal machine since one shared server absorbs everyone's requests.
+  Drop to `qwen2.5-coder:7b` (pull it instead, and update every client's
+  `config.yaml` to match) if the server hardware can't comfortably run
+  14B, especially once several people are sharing it concurrently.
 - [Docker](https://docs.docker.com/get-docker/) installed. On Linux
   (recommended for a machine meant to stay running as a server):
   ```
@@ -75,12 +89,25 @@ each setting does and why).
 
 ### Pull the model
 
-Same model names this project already uses elsewhere — run this once,
-on the server:
+Same model name this project's `config.yaml` already uses — run this
+once, on the server:
 
 ```
-docker exec ollama ollama pull qwen2.5-coder:7b
+docker exec ollama ollama pull qwen2.5-coder:14b
 ```
+
+If anyone on the team wants `semantic_search` (meaning-based code
+search — see `README.md`), also pull a second, much smaller embedding
+model on the same server the same way:
+
+```
+docker exec ollama ollama pull nomic-embed-text
+```
+
+No separate deployment for this — it's just another model served by
+the same Ollama instance on the same port. Each client that wants it
+enabled sets `model.embedding_name: "nomic-embed-text"` in their own
+`config.yaml` alongside `endpoint_url`, same as below.
 
 ### Verify it's reachable from the network
 
@@ -117,7 +144,8 @@ Each team member's own machine, for working on their own projects:
    ```yaml
    model:
      endpoint_url: "http://<server-lan-ip>:11434"
-     name: "qwen2.5-coder:7b"   # must match what was pulled on the server
+     name: "qwen2.5-coder:14b"   # must match what was pulled on the server
+     # embedding_name: "nomic-embed-text"   # optional, only if you want semantic_search
    ```
 4. To work on a specific project, `cd` into *that project's own folder*
    first, then run this agent's `main.py` from there (using its full

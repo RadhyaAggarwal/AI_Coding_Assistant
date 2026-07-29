@@ -19,9 +19,28 @@ touching more than the exact text matched. Beyond file/symbol lookup
 (`find_symbol`, `repo_overview`, `html_overview`), it can also trace
 cross-file relationships — which files import a given module
 (`find_importers`) and where a function is actually called from
-(`find_callers`) — for questions that span more than one file. Not yet
-built: a self-correction loop beyond what fits in one request's step
-budget, and team/multi-developer features.
+(`find_callers`) — for questions that span more than one file.
+
+Optionally, if a separate embedding model is configured (see
+"Semantic search" below), the agent also gets `semantic_search`: finds
+relevant code for a vague, natural-language question when you don't
+know a function's exact name, ranking by meaning rather than literal
+text match. This is a genuinely different capability from the
+exact-match tools above, not a replacement for them — see that section
+for an honest note on how reliably the agent actually chooses to use it.
+
+Every request is logged (`--sessions` to browse recent ones), and a
+single task can be continued across separate `python main.py` calls
+with `--continue` if it runs out of its step budget partway through.
+
+Not yet built: a dedicated Git-specific tool (`run_command` can already
+run raw git commands, but there's no structured tool for it) and a
+dedicated testing/verification subsystem beyond what the existing loop
+already does (running tests via `run_command` and checking the result).
+Team/multi-developer *awareness* features (shared history, cross-user
+context) also aren't built — sharing a single model server across a
+team, which is a different and already-supported thing, is covered in
+`DEPLOYMENT.md`.
 
 ## Quickstart
 
@@ -69,6 +88,47 @@ budget, and team/multi-developer features.
    python main.py --history
    python main.py --rollback <snapshot_id>
    ```
+
+6. **Continue a task, or look back at past ones**:
+
+   ```
+   python main.py --continue "keep going"   # resume the last task with a fresh step budget
+   python main.py --sessions                # list recent requests and their outcomes
+   ```
+
+## Semantic search (optional)
+
+`semantic_search` finds code by meaning rather than exact name or text
+match — useful for a vague question like "where do we check if a user
+is allowed to delete something" when you don't know what the relevant
+function is actually called. It's disabled by default and requires a
+separate, much smaller embedding model:
+
+```
+ollama pull nomic-embed-text
+```
+
+Then set `model.embedding_name: "nomic-embed-text"` in `config.yaml`
+(commented out by default). With nothing set, the tool simply isn't
+registered — no error, no degraded behavior for anyone not using it.
+
+**Honest note on real-world usefulness, not just whether it works:**
+the underlying search itself (chunking, ranking) is tested and correct.
+Live testing found the coding model in this project rarely chooses to
+use it on its own, even when it's clearly available and highly ranked —
+it tends to reach for an exact-match tool first and give up rather than
+try the meaning-based one. This is a model-judgment limitation, not a
+bug in the tool, and it may well improve with a more capable coding
+model. Kept enabled (opt-in, zero cost if unconfigured) rather than
+removed over a limitation outside the tool's own control — see project
+history for the full investigation if picking this up.
+
+There's also an opt-in, off-by-default `agent.embedding_aware_routing`
+config flag that makes per-step tool selection consider embedding
+similarity alongside keyword overlap, not just for `semantic_search`
+itself — see the comment above it in `config.yaml` for what it does and
+why it defaults to off (a real added network call on every step, not
+just when a tool is actually used).
 
 ## Configuration
 
