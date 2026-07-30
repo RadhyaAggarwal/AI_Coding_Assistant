@@ -82,6 +82,24 @@ team, which is a different and already-supported thing, is covered in
    ~1 to a few minutes, especially for requests that chain several tool
    calls.
 
+   **This example runs the agent against its own code, just to confirm
+   it works — the real point is running it against a *different*
+   project.** `config.yaml`'s `project.root_path: "."` resolves
+   relative to whatever directory you're standing in when you run it,
+   not to wherever this project's own code lives (confirmed by testing
+   this directly). So to work on another project:
+
+   ```
+   cd /path/to/some/other/project
+   python /path/to/this/agent/main.py "Fix the bug in utils.py"
+   ```
+
+   Using the agent's full path like this (or adding this project's
+   directory to your `PATH` so `main.py` can be called by name from
+   anywhere) means you never need to copy or move this project's code —
+   one install here can be pointed at any number of other projects, one
+   at a time, just by changing which directory you run it from.
+
 5. **Review or undo an edit** the agent made:
 
    ```
@@ -120,8 +138,8 @@ it tends to reach for an exact-match tool first and give up rather than
 try the meaning-based one. This is a model-judgment limitation, not a
 bug in the tool, and it may well improve with a more capable coding
 model. Kept enabled (opt-in, zero cost if unconfigured) rather than
-removed over a limitation outside the tool's own control — see project
-history for the full investigation if picking this up.
+removed over a limitation outside the tool's own control — see commit
+`3796d4d` for the full live-testing investigation if picking this up.
 
 There's also an opt-in, off-by-default `agent.embedding_aware_routing`
 config flag that makes per-step tool selection consider embedding

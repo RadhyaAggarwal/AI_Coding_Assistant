@@ -52,29 +52,36 @@ or touches anyone's project files.
   several people are sharing one machine.
 - **Model size, chosen deliberately, not the smallest option:** this
   project currently defaults to `qwen2.5-coder:14b` (`config.yaml`'s
-  `model.name`), not the smaller `qwen2.5-coder:7b` also referenced
-  throughout this project's history — live testing found the 14B model
-  noticeably more reliable at multi-step tool use and genuine multi-hop
-  reasoning that the 7B model couldn't do at all (see project memory
-  for specifics). This is a real hardware tradeoff, not free: 14B needs
-  more RAM/VRAM than 7B, which matters more here than on a single
-  personal machine since one shared server absorbs everyone's requests.
+  `model.name`), not the smaller `qwen2.5-coder:7b`. Concrete reason:
+  given a bug report describing a symptom in one function, but whose
+  actual root cause lived in a different function it called, the 7B
+  model never investigated the dependency at all and invented a wrong
+  fix instead; the 14B model correctly traced it and fixed the real
+  cause. This is a real hardware tradeoff, not free: 14B needs more
+  RAM/VRAM than 7B, which matters more here than on a single personal
+  machine since one shared server absorbs everyone's requests.
   Drop to `qwen2.5-coder:7b` (pull it instead, and update every client's
   `config.yaml` to match) if the server hardware can't comfortably run
   14B, especially once several people are sharing it concurrently.
-- [Docker](https://docs.docker.com/get-docker/) installed. On Linux
-  (recommended for a machine meant to stay running as a server):
+- **Linux or Windows server:** [Docker](https://docs.docker.com/get-docker/)
+  installed. On Linux (recommended for a machine meant to stay running
+  as a server):
   ```
   curl -fsSL https://get.docker.com | sh
   ```
-  On Windows, install Docker Desktop instead (requires WSL2).
-- If using an NVIDIA GPU, also install the [NVIDIA Container
+  On Windows, install Docker Desktop instead (requires WSL2). If using
+  an NVIDIA GPU, also install the [NVIDIA Container
   Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
   — without it, Docker can't give containers access to the GPU even
   though it's physically present. Not needed for a CPU-only server; see
   the note in `deploy/docker-compose.yml` for what to remove if so.
+- **Mac server: skip Docker, run Ollama natively instead.** Docker
+  Desktop on Mac can't pass Apple Silicon's GPU through to containers,
+  so Ollama running inside Docker there would be CPU-only — slower
+  than running it directly, which does get GPU acceleration. See
+  "Start Ollama on macOS" below instead of the Docker steps.
 
-### Start Ollama
+### Start Ollama on Linux/Windows (Docker)
 
 From this project's root on the server machine:
 
@@ -87,10 +94,107 @@ background, and configures it to restart automatically if it crashes or
 fails its health check (see the comments in that file for exactly what
 each setting does and why).
 
+### Start Ollama on macOS (no Docker)
+
+Install Ollama via the `.dmg` from https://ollama.com/download, or
+`brew install ollama` — same as a single-user setup (see `README.md`).
+
+**Keep it running automatically, including across a reboot:**
+
+1. Find where Ollama is actually installed:
+   ```
+   which ollama
+   ```
+2. Create a file at `~/Library/LaunchAgents/com.ollama.serve.plist`
+   with this content, replacing `/path/to/ollama` with the real path
+   from step 1:
+   ```xml
+   <?xml version="1.0" encoding="UTF-8"?>
+   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+   <plist version="1.0">
+   <dict>
+       <key>Label</key>
+       <string>com.ollama.serve</string>
+       <key>ProgramArguments</key>
+       <array>
+           <string>/path/to/ollama</string>
+           <string>serve</string>
+       </array>
+       <key>RunAtLoad</key>
+       <true/>
+       <key>KeepAlive</key>
+       <true/>
+       <key>StandardOutPath</key>
+       <string>/tmp/ollama.log</string>
+       <key>StandardErrorPath</key>
+       <string>/tmp/ollama.log</string>
+   </dict>
+   </plist>
+   ```
+3. Activate it:
+   ```
+   launchctl load ~/Library/LaunchAgents/com.ollama.serve.plist
+   ```
+
+`RunAtLoad` starts Ollama the next time this Mac boots or this user
+logs in; `KeepAlive` restarts it automatically if the process ever
+crashes or is quit. Together these do the same job as Docker's
+`restart: unless-stopped` on Linux/Windows.
+
+**Optional, more advanced — also recover from a hang, not just a
+crash.** The setup above only restarts Ollama if it actually exits; it
+won't notice Ollama being stuck-but-still-running (a hang problem this
+project has hit before — see "Operating the server" below). To also
+catch that, save this as `~/ollama_watchdog.sh`:
+
+```bash
+#!/bin/bash
+if ! curl -s -o /dev/null --max-time 10 http://localhost:11434/api/tags; then
+    pkill -f "ollama serve"
+fi
+```
+
+(This is a minimal version — it restarts on the very first failed
+check, rather than waiting for a few in a row first. Fine as a starting
+point; a more careful version would avoid reacting to one slow-but-fine
+request.) Make it executable and run it every 2 minutes via `cron`:
+
+```
+chmod +x ~/ollama_watchdog.sh
+crontab -e
+```
+
+then add this line inside the editor that opens:
+
+```
+*/2 * * * * /Users/<your-username>/ollama_watchdog.sh
+```
+
+Killing the process is enough on its own — `launchd`'s `KeepAlive` from
+above will restart it automatically right after.
+
+### Keep the machine itself awake
+
+A "server" here is just a regular computer — nothing stops it from
+going to sleep like any other one, and a sleeping machine stops
+responding to the network entirely until it wakes up (indistinguishable
+from being down, from a client's point of view). If this machine needs
+to stay available continuously, turn off sleep in its power settings:
+macOS, System Settings → Battery/Energy; Windows, Settings → Power &
+Sleep. This is a separate concern from crash/hang recovery above —
+sleep is about the *machine* being reachable at all, while `launchd`
+(or Docker's restart policy) is about the Ollama *process* recovering
+once the machine already is reachable.
+
+(A full shutdown is different from sleep — everything stops, and
+starting back up is exactly what `RunAtLoad`/Docker's restart policy
+already handle automatically, same as above.)
+
 ### Pull the model
 
 Same model name this project's `config.yaml` already uses — run this
-once, on the server:
+once, on the server (drop the `docker exec ollama` prefix if running
+Ollama natively on macOS, per above):
 
 ```
 docker exec ollama ollama pull qwen2.5-coder:14b
@@ -157,6 +261,8 @@ Each team member's own machine, for working on their own projects:
 
 ## 3. Operating the server
 
+**On Linux/Windows (Docker):**
+
 - **Logs**: `docker compose -f deploy/docker-compose.yml logs -f`
 - **Manual restart**: `docker compose -f deploy/docker-compose.yml restart`
 - **Stop entirely**: `docker compose -f deploy/docker-compose.yml down`
@@ -164,17 +270,34 @@ Each team member's own machine, for working on their own projects:
   after this — `up -d` again won't need to re-pull it)
 - **Pull/change models**: `docker exec ollama ollama pull <model>`, then
   update every client's `config.yaml` to match.
+
+**On macOS (native, via `launchd`):**
+
+- **Logs**: `tail -f /tmp/ollama.log` (or wherever `StandardOutPath` was
+  set to, in the plist from the setup step above)
+- **Manual restart**: `launchctl unload ~/Library/LaunchAgents/com.ollama.serve.plist && launchctl load ~/Library/LaunchAgents/com.ollama.serve.plist`
+- **Stop entirely**: `launchctl unload ~/Library/LaunchAgents/com.ollama.serve.plist`
+  (the downloaded model stays on disk regardless — nothing needs
+  re-pulling when you load it again)
+- **Pull/change models**: `ollama pull <model>`, then update every
+  client's `config.yaml` to match.
+
+**Both platforms:**
+
 - **Concurrency**: Ollama can serve multiple requests at once
   (`OLLAMA_NUM_PARALLEL`), bounded by the server's actual hardware —
   several people can genuinely get simultaneous responses, but enough
   simultaneous heavy requests will queue rather than instantly complete.
   This is normal for any shared compute resource.
-- **The healthcheck in `deploy/docker-compose.yml` is a mitigation, not
+- **The healthcheck in `deploy/docker-compose.yml` (or the equivalent
+  watchdog script on a macOS server, see above) is a mitigation, not
   a confirmed fix**, for a hang/timeout issue this project has hit
-  before and not fully root-caused (see project memory /
-  conversation history for the investigation). It should make an
-  unresponsive Ollama recover automatically within roughly a minute
-  instead of requiring a human to notice and intervene — but if it
+  before and not fully root-caused — see commit `30108b8` ("Add a
+  fail-fast health check before each model request") for the original
+  investigation and what was actually confirmed vs. still uncertain.
+  It should make an unresponsive Ollama recover automatically within
+  roughly a minute instead of requiring a human to notice and
+  intervene — but if it
   turns out to recur even with this in place, that's a real finding
   worth investigating further, not something to assume is already
   solved.

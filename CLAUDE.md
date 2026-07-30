@@ -65,7 +65,7 @@ AST/tree-sitter-based symbol/relationship lookup (`find_symbol`,
 not an oversight): Git-specific tools (`run_command` can already run raw
 git commands, but there's no dedicated, structured tool for it), and a
 possible dedicated testing/verification subsystem beyond what the
-existing loop + `run_command` + `edit_file` already covers. See project
-memory / commit history for the detailed history of what's been tried,
+existing loop + `run_command` + `edit_file` already covers. See commit
+history (`git log`) for the detailed history of what's been tried,
 what worked, and what's an accepted model-capability limitation rather
 than an open bug.
